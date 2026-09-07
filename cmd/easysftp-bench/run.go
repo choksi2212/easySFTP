@@ -11,6 +11,7 @@ import (
 	"github.com/eiserv/easySFTP/internal/benchmark/runner"
 	"github.com/eiserv/easySFTP/internal/benchmark/scenario"
 	"github.com/eiserv/easySFTP/internal/benchmark/schema"
+	"github.com/eiserv/easySFTP/internal/benchmark/stats"
 	"github.com/eiserv/easySFTP/internal/benchmark/store"
 )
 
@@ -41,7 +42,9 @@ func runMatrix() error {
 	if err != nil {
 		return err
 	}
-	if opts.Repeats, err = envPositive("REPEATS", 1); err != nil {
+	// Three samples can yield a non-zero MAD. Keep explicit smaller counts
+	// available for quick exploratory sweeps; the store warns and marks them.
+	if opts.Repeats, err = envPositive("REPEATS", stats.MinRepeatsForAnalysis); err != nil {
 		return err
 	}
 	if opts.ConnectionsAxis, opts.ConnectionsDisplay, err = envAxis("MATRIX_CONNECTIONS", "1 2 4 8"); err != nil {
