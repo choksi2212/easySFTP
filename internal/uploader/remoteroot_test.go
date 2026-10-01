@@ -33,6 +33,15 @@ func TestCheckRemoteRoot(t *testing.T) {
 		{"parent reached by climbing out of a subdirectory", "dist/../.."},
 		{"escape below a deeper prefix", "../../etc"},
 		{"backslashes normalize to the same escape", `..\..`},
+
+		// The rows below all passed before #285: a Windows drive root
+		// is not "/" or a relative climb, so the switch never matched it.
+		{"Windows drive root, backslash spelling", `C:\`},
+		{"Windows drive root, slash spelling", "C:/"},
+		{"Windows drive root, server-absolute spelling", "/C:/"},
+		{"another drive", "/D:/"},
+		{"drive root reached by climbing out of a subdirectory", "/C:/site/.."},
+		{"lowercase drive root", "d:/"},
 	}
 	for _, tc := range refused {
 		t.Run("refused/"+tc.name, func(t *testing.T) {
@@ -57,6 +66,12 @@ func TestCheckRemoteRoot(t *testing.T) {
 		{"path that climbs and comes back down", "/var/www/../html"},
 		{"directory whose name merely starts with two dots", "..config"},
 		{"home subdirectory", "~/public_html"},
+
+		// A guard that grew too strict would break every workflow
+		// deploying into a drive-lettered path on a Windows server.
+		{"directory below a Windows drive root", "/C:/site"},
+		{"relative directory that is not a drive designator", "CD"},
+		{"colon in a deeper path", "/var/www/schedule:live"},
 	}
 	for _, tc := range allowed {
 		t.Run("allowed/"+tc.name, func(t *testing.T) {

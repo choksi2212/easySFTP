@@ -161,9 +161,12 @@ Two safety nets apply before `sync` or `clean` delete anything:
   or the empty string is rejected outright. So is one that climbs above the
   directory the session starts in, such as `..`, `../..` or `dist/../..`,
   which is where a target built from a workflow expression tends to land when
-  the expression is empty or has a component too many. No mode will ever wipe
-  a server root or a login directory. A relative target that stays put, like
-  `www/public_html`, is unaffected.
+  the expression is empty or has a component too many. The root of a Windows
+  drive is refused the same way, whatever its spelling: a Windows SFTP server
+  addresses a drive as `/C:/...` or `C:/...`, and a target that resolves to
+  the drive itself (`C:`, `C:/`, `/C:/`, `/C:/site/..`) is a root, not a
+  deploy target. No mode will ever wipe a server root or a login directory.
+  A relative target that stays put, like `www/public_html`, is unaffected.
 - **`max_deletes`** aborts a run that would remove more remote entries than
   the limit, catching a misconfiguration before it does damage. `0` means
   unlimited, and is the default. Set it via `safety.max_deletes` in the
