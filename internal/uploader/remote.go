@@ -176,6 +176,14 @@ func remoteAbsent(client *sftp.Client, p string, watch *stallWatchdog) (bool, er
 // stripped the last path component all land on exactly these values, which is
 // the class of mistake this guard exists to catch (issue #222).
 //
+// The root of a Windows drive is a root too (issue #285). A Windows SFTP
+// server addresses a drive as "/C:/..." or "C:/..."; after normalizeRemote
+// both spellings of the drive root clean to "C:" and "/C:" respectively, and
+// every spelling that climbs back to the drive ("C:/..", "/C:/site/..") lands
+// on one of them. A literal directory named "C:" in a Unix login directory is
+// refused as well: such a name is vanishingly rare, and every subdirectory of
+// it stays deployable, which is the right trade for a guard.
+//
 // A relative target that stays put ("www/public_html") is still allowed. It is
 // the documented behaviour and a great many workflows use it.
 func checkRemoteRoot(remote string) error {
@@ -183,10 +191,29 @@ func checkRemoteRoot(remote string) error {
 	switch {
 	case normalized == "/", normalized == ".", normalized == "", normalized == "~":
 		return fmt.Errorf("refusing a destructive mode on remote root %q; target a specific subdirectory instead", remote)
+	case isDriveRoot(normalized):
+		return fmt.Errorf("refusing a destructive mode on remote root %q: it resolves to %q, the root of a Windows drive; target a specific subdirectory instead", remote, normalized)
 	case normalized == "..", strings.HasPrefix(normalized, "../"):
 		return fmt.Errorf("refusing a destructive mode on remote root %q: it resolves to %q, above the directory the session starts in; target a specific subdirectory instead", remote, normalized)
 	}
 	return nil
+}
+
+// isDriveRoot reports whether normalized, an already-cleaned remote path, is
+// exactly a Windows drive designator: "X:" or "/X:" for a single ASCII letter,
+// either case, since Windows drive letters are case-insensitive.
+// normalizeRemote strips the trailing slash, so "C:/", "C:\\", "/C:/" and every
+// path that climbs back to the drive all reduce to these two forms.
+func isDriveRoot(normalized string) bool {
+	if len(normalized) != 2 && len(normalized) != 3 {
+		return false
+	}
+	if len(normalized) == 3 && normalized[0] != '/' {
+		return false
+	}
+	letter := normalized[len(normalized)-2]
+	return normalized[len(normalized)-1] == ':' &&
+		((letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z'))
 }
 
 // deleteBudget enforces safety.max_deletes. Three things about it are worth
