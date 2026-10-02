@@ -118,11 +118,37 @@ func buildPlan(pair config.UploadPair, strategy config.Strategy, opts planOption
 		return p, nil
 	}
 
-	err = filepath.WalkDir(pair.Local, func(fpath string, d fs.DirEntry, err error) error {
+	// The source may itself be a symlink or a junction to a directory (nix
+	// result, bazel-bin, a junction on a Windows runner). os.Stat above
+	// resolved it and saw a directory, but WalkDir starts from os.Lstat and
+	// would see only the link: the callback runs once, the plan stays empty,
+	// and clean/sync then reconcile an empty tree - wiping the target while
+	// uploading nothing. Resolve the root once and walk the real directory;
+	// pair.Local stays the path for relative computation and log lines.
+	walkRoot := pair.Local
+	if resolved, rerr := filepath.EvalSymlinks(pair.Local); rerr == nil && resolved != pair.Local {
+		if verbose != nil {
+			verbose.Infof("source %s is a link to %s; walking the target directory", pair.Local, resolved)
+		}
+		walkRoot = resolved
+	} else if isWindowsJunction(pair.Local) {
+		// Windows junctions: filepath.EvalSymlinks resolves them to
+		// themselves, so the check above does not fire, while WalkDir
+		// still refuses to descend. Resolve through the reparse point
+		// the way os.Stat already did and walk the real directory.
+		if resolved, rerr := resolveWindowsJunction(pair.Local); rerr == nil && resolved != pair.Local {
+			if verbose != nil {
+				verbose.Infof("source %s is a junction to %s; walking the target directory", pair.Local, resolved)
+			}
+			walkRoot = resolved
+		}
+	}
+
+	err = filepath.WalkDir(walkRoot, func(fpath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(pair.Local, fpath)
+		rel, err := filepath.Rel(walkRoot, fpath)
 		if err != nil {
 			return err
 		}
