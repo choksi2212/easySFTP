@@ -287,6 +287,39 @@ deployments:
 			t.Fatalf("a merge sequence was rejected: %v", err)
 		}
 	})
+	t.Run("a typo inside an inline merge mapping is caught", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  web:
+    <<: {source: dist, taget: /var/www/html}
+    mode: overlay
+`)
+		if err == nil || !strings.Contains(err.Error(), `unknown option "taget"`) {
+			t.Fatalf("expected the typo inside the inline merge value to be caught, got %v", err)
+		}
+	})
+	t.Run("a trailing document separator still loads", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  web:
+    source: dist
+    target: /b
+---
+`)
+		if err != nil {
+			t.Fatalf("a lone trailing --- must not fail the file: %v", err)
+		}
+	})
+	t.Run("a second document with content is still refused", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  web:
+    source: a
+    target: /b
+---
+version: 3
+`)
+		if err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
+			t.Fatalf("expected the second document to be refused, got %v", err)
+		}
+	})
 	t.Run("a shared anchor referenced by two siblings is not a cycle", func(t *testing.T) {
 		// The diamond: one base, several deployments overriding a field.
 		// This is the pattern docs/easysftp.example.yml demonstrates;
@@ -312,17 +345,6 @@ deployments:
 			if cfg.Uploads[i].Remote != want {
 				t.Errorf("deployment %d target = %q, want %q", i, cfg.Uploads[i].Remote, want)
 			}
-		}
-	})
-	t.Run("the self-cycle still fails with the guard back-tracking", func(t *testing.T) {
-		_, err := loadFile(t, base+`deployments:
-  site: &site
-    <<: *site
-    source: dist
-    target: /a
-`)
-		if err == nil || !strings.Contains(err.Error(), "cyclic merge") {
-			t.Fatalf("expected the real self-cycle to still be refused, got %v", err)
 		}
 	})
 	t.Run("cyclic merge key fails cleanly instead of overflowing", func(t *testing.T) {

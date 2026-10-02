@@ -188,7 +188,7 @@ func checkKeys(node *yaml.Node, section, location string) error {
 
 // checkKeysVisited is checkKeys carrying the set of alias targets already
 // walked, so a self-referential merge key (a: &a with <<: *a inside it)
-// fails with the unknown-option error instead of recursing until the stack
+// fails with a cyclic-merge error instead of recursing until the stack
 // overflows. yaml.v3 itself resolves such loops only when decoding, and the
 // walk here predates that, so the guard belongs here.
 func checkKeysVisited(node *yaml.Node, section, location string, visited map[*yaml.Node]bool) error {
@@ -209,10 +209,18 @@ func checkKeysVisited(node *yaml.Node, section, location string, visited map[*ya
 			targets := []*yaml.Node{}
 			if value.Kind == yaml.AliasNode {
 				targets = append(targets, value.Alias)
+			} else if value.Kind == yaml.MappingNode {
+				// An inline mapping merges just like an alias target, so
+				// its keys need the same check - a typo inside it is
+				// otherwise a silent no-op, the class of bug this walk
+				// exists to close.
+				targets = append(targets, value)
 			} else if value.Kind == yaml.SequenceNode {
 				for _, item := range value.Content {
 					if item.Kind == yaml.AliasNode {
 						targets = append(targets, item.Alias)
+					} else if item.Kind == yaml.MappingNode {
+						targets = append(targets, item)
 					}
 				}
 			}
@@ -324,6 +332,21 @@ func minInt(vals ...int) int {
 // because YAML's int parsed something enormous.
 const maxConfiguredSeconds = 24 * 60 * 60
 
+// isEmptySecondDocument reports whether a decoded second document carries
+// no content: a document node whose single scalar is null (a trailing ---
+// or one followed by comments only). Files ending that way loaded fine
+// before the decoder swap and must keep loading.
+func isEmptySecondDocument(node *yaml.Node) bool {
+	if len(node.Content) != 1 {
+		return false
+	}
+	doc := node.Content[0]
+	if doc.Kind != yaml.ScalarNode || doc.Tag != "!!null" {
+		return false
+	}
+	return doc.Value == ""
+}
+
 // loadConfigFile reads, parses and applies the v3 YAML config file onto cfg.
 func loadConfigFile(cfg *Config, path string) error {
 	data, err := os.ReadFile(path)
@@ -349,11 +372,17 @@ func loadConfigFile(cfg *Config, path string) error {
 		if err != nil {
 			return fail(err)
 		}
-		line := 0
-		if len(second.Content) > 0 {
-			line = second.Content[0].Line
+		// A lone '---' at the end of a file is a document node holding
+		// a single null scalar. Nothing was pasted under it, so the file
+		// is what it always was; refuse only a second document with
+		// content, naming the line it starts on.
+		if !isEmptySecondDocument(&second) {
+			line := 0
+			if len(second.Content) > 0 {
+				line = second.Content[0].Line
+			}
+			return fail(fmt.Errorf("the file contains more than one YAML document (document 2 starts at line %d); easySFTP reads a single configuration, so combine the documents into one", line))
 		}
-		return fail(fmt.Errorf("the file contains more than one YAML document (document 2 starts at line %d); easySFTP reads a single configuration, so combine the documents into one", line))
 	}
 	if len(root.Content) > 0 {
 		if err := checkKeys(root.Content[0], "", ""); err != nil {
