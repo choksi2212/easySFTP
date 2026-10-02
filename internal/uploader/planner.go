@@ -124,7 +124,9 @@ func buildPlan(pair config.UploadPair, strategy config.Strategy, opts planOption
 	// would see only the link: the callback runs once, the plan stays empty,
 	// and clean/sync then reconcile an empty tree - wiping the target while
 	// uploading nothing. Resolve the root once and walk the real directory;
-	// pair.Local stays the path for relative computation and log lines.
+	// relative paths are computed from the walked root, so the deployed
+	// layout is the target directory's, and pair.Local stays the path for
+	// log lines.
 	walkRoot := pair.Local
 	// Only trust EvalSymlinks when the entry is a real symlink. On Windows
 	// it also normalizes 8.3 short names to the long path, so a junction

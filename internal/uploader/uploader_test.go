@@ -1048,9 +1048,11 @@ func TestSymlinkedSourceDirectoryIsWalkedThrough(t *testing.T) {
 	}
 }
 
-// The end-to-end consequence of the plan bug: clean mode with a linked
-// source deleted the target's live files and uploaded nothing, all green.
-func TestCleanWithSymlinkedSourceUploadsAndKeepsTarget(t *testing.T) {
+// The end-to-end consequence of the plan bug: with a linked source the
+// plan was empty, so clean deleted the remote files and uploaded nothing,
+// all green. A correct run uploads the file behind the link and deletes
+// the remote-only file, which is clean's documented reconciliation.
+func TestCleanWithSymlinkedSourceDeploysTheTargetDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation needs a privilege the CI runner does not grant")
 	}
