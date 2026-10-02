@@ -287,6 +287,44 @@ deployments:
 			t.Fatalf("a merge sequence was rejected: %v", err)
 		}
 	})
+	t.Run("a shared anchor referenced by two siblings is not a cycle", func(t *testing.T) {
+		// The diamond: one base, several deployments overriding a field.
+		// This is the pattern docs/easysftp.example.yml demonstrates;
+		// the cycle guard must not reject it.
+		cfg, err := loadFile(t, base+`deployments:
+  base: &base
+    source: dist
+    target: /var/www/base
+  website:
+    <<: *base
+    target: /var/www/html
+  staging:
+    <<: *base
+    target: /var/www/staging
+`)
+		if err != nil {
+			t.Fatalf("a shared anchor across sibling deployments was rejected as cyclic: %v", err)
+		}
+		if len(cfg.Uploads) != 3 {
+			t.Fatalf("expected three deployments, got %d", len(cfg.Uploads))
+		}
+		for i, want := range []string{"/var/www/base", "/var/www/html", "/var/www/staging"} {
+			if cfg.Uploads[i].Remote != want {
+				t.Errorf("deployment %d target = %q, want %q", i, cfg.Uploads[i].Remote, want)
+			}
+		}
+	})
+	t.Run("the self-cycle still fails with the guard back-tracking", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  site: &site
+    <<: *site
+    source: dist
+    target: /a
+`)
+		if err == nil || !strings.Contains(err.Error(), "cyclic merge") {
+			t.Fatalf("expected the real self-cycle to still be refused, got %v", err)
+		}
+	})
 	t.Run("cyclic merge key fails cleanly instead of overflowing", func(t *testing.T) {
 		_, err := loadFile(t, base+`deployments:
   site: &site

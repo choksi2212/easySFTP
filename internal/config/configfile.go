@@ -221,7 +221,15 @@ func checkKeysVisited(node *yaml.Node, section, location string, visited map[*ya
 					return fmt.Errorf("cyclic merge at %q: a merge key refers back to the mapping that contains it", at)
 				}
 				visited[target] = true
-				if err := checkKeysVisited(target, section, location, visited); err != nil {
+				err := checkKeysVisited(target, section, location, visited)
+				// Back-track: the mark means "on this merge chain", not
+				// "ever seen". A shared anchor referenced by two siblings
+				// is a diamond, not a cycle - the one-base-many-targets
+				// pattern the example config itself demonstrates - while
+				// a real self-cycle still fails, because its mark stays
+				// set for as long as the chain containing it is walked.
+				delete(visited, target)
+				if err != nil {
 					return err
 				}
 			}
