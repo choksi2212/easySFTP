@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -22,7 +23,6 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/eiserv/easySFTP/internal/config"
-	"os/exec"
 )
 
 // writeTree creates files under root; keys are slash-separated relative paths.
@@ -1067,7 +1067,10 @@ func TestCleanWithSymlinkedSourceUploadsAndKeepsTarget(t *testing.T) {
 	if err := client.MkdirAll("/www"); err != nil {
 		t.Fatal(err)
 	}
-	writeRemoteFile(t, client, "/www/keep.txt", "keep me")
+	// A remote-only file: clean's documented semantics delete it. The bug
+	// this test pins is the other direction - the plan behind the link
+	// coming back empty, so index.html was never uploaded.
+	writeRemoteFile(t, client, "/www/old.html", "stale")
 
 	cfg := baseConfig(srv)
 	cfg.Uploads = []config.UploadPair{{Local: link, Remote: "/www", Strategy: config.StrategyClean}}
@@ -1079,10 +1082,50 @@ func TestCleanWithSymlinkedSourceUploadsAndKeepsTarget(t *testing.T) {
 		t.Fatalf("expected the file behind the link to be uploaded, got FilesUploaded=%d (FilesDeleted=%d)", res.FilesUploaded, res.FilesDeleted)
 	}
 	if !remoteExists(t, srv, "/www/index.html") {
-		t.Fatal("the uploaded file is missing from the target")
+		t.Fatal("the uploaded file is missing from the target - the plan behind the link was empty")
 	}
-	if !remoteExists(t, srv, "/www/keep.txt") {
-		t.Fatal("clean deleted a live target file because the plan was empty")
+	if remoteExists(t, srv, "/www/old.html") {
+		t.Fatal("clean did not remove the remote-only file")
+	}
+}
+
+// Windows junction reached through an 8.3 short path: EvalSymlinks returns
+// the long form of the junction without resolving it (a different string),
+// so string-comparison logic pointed the walk back at the junction and
+// the plan came back empty - the exact CI failure the review found, since
+// GitHub Windows runners put TEMP under RUNNER~1.
+func TestShortNamedJunctionIsWalkedThrough(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("junctions and 8.3 names are Windows concepts")
+	}
+	local := t.TempDir()
+	writeTree(t, local, map[string]string{"index.html": "x", "app.js": "y"})
+
+	link := filepath.Join(t.TempDir(), "junction")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, local).CombinedOutput(); err != nil {
+		t.Skipf("cannot create a junction on this machine: %v (%s)", err, out)
+	}
+	shortParent, err := exec.Command("powershell", "-NoProfile", "-c",
+		"(New-Object -ComObject Scripting.FileSystemObject).GetFolder('"+
+			filepath.Dir(link)+"').ShortPath").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(shortParent)) == "" {
+		t.Skipf("cannot determine the 8.3 short path on this machine: %v (%s)", err, shortParent)
+	}
+	shortLink := filepath.Join(strings.TrimSpace(string(shortParent)), filepath.Base(link))
+	if shortLink == link {
+		t.Skip("the temp path has no short form on this machine")
+	}
+
+	matcher := ignore.CompileIgnoreLines()
+	p, err := buildPlan(config.UploadPair{Local: shortLink, Remote: "/www"}, config.StrategyOverlay, planOptions{matcher: matcher, pruneDirs: true, manifestName: manifestName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.files) != 2 {
+		t.Fatalf("expected the 2 files behind the short-named junction, got %d (%+v)", len(p.files), p.files)
+	}
+	if p.skippedNonRegular != 0 {
+		t.Errorf("the junction root itself was counted as skipped non-regular: %d", p.skippedNonRegular)
 	}
 }
 

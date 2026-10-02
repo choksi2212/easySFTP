@@ -126,17 +126,33 @@ func buildPlan(pair config.UploadPair, strategy config.Strategy, opts planOption
 	// uploading nothing. Resolve the root once and walk the real directory;
 	// pair.Local stays the path for relative computation and log lines.
 	walkRoot := pair.Local
-	if resolved, rerr := filepath.EvalSymlinks(pair.Local); rerr == nil && resolved != pair.Local {
-		if verbose != nil {
-			verbose.Infof("source %s is a link to %s; walking the target directory", pair.Local, resolved)
+	// Only trust EvalSymlinks when the entry is a real symlink. On Windows
+	// it also normalizes 8.3 short names to the long path, so a junction
+	// reached through a short name yields a *different string* without
+	// resolving anything; acting on that would point the walk back at the
+	// junction itself and leave the plan empty - the exact bug this fix
+	// exists to close. Junctions are detected and resolved below instead.
+	if ls, lerr := os.Lstat(pair.Local); lerr == nil && ls.Mode()&fs.ModeSymlink != 0 {
+		if resolved, rerr := filepath.EvalSymlinks(pair.Local); rerr == nil && resolved != pair.Local {
+			if verbose != nil {
+				verbose.Infof("source %s is a link to %s; walking the target directory", pair.Local, resolved)
+			}
+			walkRoot = resolved
 		}
-		walkRoot = resolved
-	} else if isWindowsJunction(pair.Local) {
-		// Windows junctions: filepath.EvalSymlinks resolves them to
-		// themselves, so the check above does not fire, while WalkDir
-		// still refuses to descend. Resolve through the reparse point
-		// the way os.Stat already did and walk the real directory.
-		if resolved, rerr := resolveWindowsJunction(pair.Local); rerr == nil && resolved != pair.Local {
+	}
+	if walkRoot == pair.Local && isWindowsJunction(pair.Local) {
+		// Windows junctions: os.Stat follows them but WalkDir refuses to
+		// descend, and EvalSymlinks does not resolve them at all. Open
+		// the reparse point for its final path - the same resolution
+		// os.Stat performs - and walk the real directory. A failure here
+		// fails the run: silently walking the junction instead would
+		// reproduce the empty plan, which for clean and sync deletes the
+		// target's contents on a green run.
+		resolved, rerr := resolveWindowsJunction(pair.Local)
+		if rerr != nil {
+			return p, fmt.Errorf("local path %s is a junction but its target could not be resolved: %w", pair.Local, rerr)
+		}
+		if resolved != pair.Local {
 			if verbose != nil {
 				verbose.Infof("source %s is a junction to %s; walking the target directory", pair.Local, resolved)
 			}
