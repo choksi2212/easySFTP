@@ -45,8 +45,11 @@ host-key: ${{ secrets.SFTP_HOST_KEY }}
 ```
 
 Either way, the connection is accepted if the server presents a key matching
-**any** pinned entry (across both inputs, if you set both), so you can simply
-pin all of your server's keys. If the server's keys ever change unexpectedly,
+**any** pinned entry (across both inputs, if you set both). Pinning one key is
+enough: with `known-hosts` easySFTP asks the server for exactly the key types
+you pinned, so a server with several key types still presents the one you
+have. Pinning all of your server's keys is also safe, and saves you having to
+find out which one the server would pick. If the server's keys ever change unexpectedly,
 the deploy fails instead of talking to an impostor. When you migrate servers,
 update the secret with the new keys.
 

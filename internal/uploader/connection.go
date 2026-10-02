@@ -112,7 +112,7 @@ func (h hop) clientConfig(timeout time.Duration, log Logger) (*ssh.ClientConfig,
 	if err != nil {
 		return nil, permanentError{err}
 	}
-	cb, err := hostKeyCallback(h, log)
+	cb, pinned, err := hostKeyCallback(h, log)
 	if err != nil {
 		return nil, permanentError{err}
 	}
@@ -123,6 +123,12 @@ func (h hop) clientConfig(timeout time.Duration, log Logger) (*ssh.ClientConfig,
 		Timeout:         timeout,
 	}
 	applySSHAlgorithms(client, h.algorithms)
+	// An explicit algorithms.host_key_algorithms list stays authoritative;
+	// only without one do the known-hosts lines pick the types to offer (see
+	// pinnedHostKeyAlgorithms).
+	if client.HostKeyAlgorithms == nil && len(pinned) > 0 {
+		client.HostKeyAlgorithms = pinned
+	}
 	return client, nil
 }
 

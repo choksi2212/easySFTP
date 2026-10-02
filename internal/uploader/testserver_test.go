@@ -1,7 +1,9 @@
 package uploader
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
@@ -28,10 +30,14 @@ type testServer struct {
 	Port          int
 	HostKeySHA256 string
 	HostPubKey    ssh.PublicKey
+	// ExtraHostKeys, filled by withExtraECDSAHostKey, are the public halves
+	// of the additional host keys, in the order they were added.
+	ExtraHostKeys []ssh.PublicKey
 	ClientKeyPEM  string
 	handlers      sftp.Handlers
 	sshConfig     *ssh.ServerConfig
 	hostSigner    ssh.Signer
+	extraSigners  []ssh.Signer // additional host keys of other types, like a stock OpenSSH server
 	listener      net.Listener
 
 	// Fault injection (set via options before the accept loop starts).
@@ -91,6 +97,25 @@ func withKeyboardInteractiveOnly() serverOption {
 			}
 			return nil, nil
 		}
+	}
+}
+
+// withExtraECDSAHostKey adds an ECDSA P-256 host key next to the server's
+// default Ed25519 one, modelling a stock OpenSSH server that has one key of
+// each type. Go's default client preference picks ECDSA before Ed25519, so a
+// client that pinned the Ed25519 key alone sees a mismatch against such a
+// server (issue #282).
+func withExtraECDSAHostKey() serverOption {
+	return func(s *testServer) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			panic(err)
+		}
+		signer, err := ssh.NewSignerFromKey(key)
+		if err != nil {
+			panic(err)
+		}
+		s.extraSigners = append(s.extraSigners, signer)
 	}
 }
 
@@ -474,7 +499,13 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 	for _, opt := range opts {
 		opt(srv)
 	}
+	for _, signer := range srv.extraSigners {
+		srv.ExtraHostKeys = append(srv.ExtraHostKeys, signer.PublicKey())
+	}
 	sshConfig.AddHostKey(srv.hostSigner)
+	for _, signer := range srv.extraSigners {
+		sshConfig.AddHostKey(signer)
+	}
 	if srv.failRename {
 		srv.handlers.FileCmd = &faultyRename{inner: srv.handlers.FileCmd}
 	}
