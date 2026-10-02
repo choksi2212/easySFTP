@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -533,6 +534,40 @@ func (c *Config) validate() error {
 			return fmt.Errorf("connection.proxy.port must be between 1 and 65535, got %d", p.Port)
 		}
 	}
+
+	// Two sync deployments into one target share one manifest, and each run
+	// deletes the other deployment's files while finishing green; see the
+	// syncSharedTargetError comment for what the user is told to do instead
+	// (issue #278).
+	if err := c.checkSyncTargets(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkSyncTargets refuses two sync deployments whose targets normalize to
+// the same path. The sync manifest is named by the run-wide sync.manifest
+// setting and lives in the target, so two sync deployments on one target
+// read and write the same file: the second one reads the first one's
+// freshly written manifest, finds every listed file "previously synced
+// and now gone locally", deletes them, uploads its own tree and rewrites
+// the manifest with only its own files. The next run repeats it with the
+// roles reversed, and every run finishes green having deleted half the
+// site. Config mode's named deployments are the documented way to
+// express "several sources", so this is refused before the network is
+// touched rather than warned about after the fact (issue #278).
+func (c *Config) checkSyncTargets() error {
+	seen := map[string]UploadPair{}
+	for _, pair := range c.Uploads {
+		if effectiveStrategy(pair) != StrategySync {
+			continue
+		}
+		target := NormalizeRemote(pair.Remote)
+		if first, ok := seen[target]; ok {
+			return syncSharedTargetError(first, pair)
+		}
+		seen[target] = pair
+	}
 	return nil
 }
 
@@ -588,4 +623,73 @@ func parseMode(s, name string) (*fs.FileMode, error) {
 	}
 	m := fs.FileMode(v)
 	return &m, nil
+}
+
+// NormalizeRemote converts a remote path to a clean slash path: backslashes
+// become slashes and path.Clean resolves ".", ".." and duplicate separators.
+// It is the one normalizer the whole codebase compares remote paths through:
+// the uploader's normalizeRemote delegates here, so a target spelled
+// "C:\www", "C:/www/" and "/C:/www/." is one path to every check that compares
+// targets, not just to the ones that happen to share a package.
+func NormalizeRemote(remote string) string {
+	return path.Clean(strings.ReplaceAll(remote, "\\", "/"))
+}
+
+// syncSharedTargetError phrases the refusal for two sync deployments whose
+// targets normalize to the same path, next to the check that produces it.
+func syncSharedTargetError(a, b UploadPair) error {
+	return fmt.Errorf("deployments %q and %q both run 'mode: sync' into target %q: they would read and write the same sync manifest and delete each other's files in a run that finishes green; merge the two sources into one directory before deploying, or give each deployment its own subdirectory (issue #278)",
+		a.Label(), b.Label(), NormalizeRemote(a.Remote))
+}
+
+// SyncTargetWarnings returns one warning per target overlap between a sync
+// and a clean deployment, in either nesting order. clean is documented to
+// wipe everything under its target, so refusing these outright would outlaw
+// a legitimate "clean the build dir, sync the site" setup; but each overlap
+// silently destroys something the other deployment tracks, so it should be a
+// decision rather than an accident (issue #278). Two shapes:
+//
+//   - the sync target is inside (or equal to) the clean target: the clean
+//     deletes the sync manifest along with the files, so what the sync
+//     re-uploads and what it deletes is decided by run order;
+//   - the clean target is inside the sync target: the clean deletes files
+//     the sync uploaded and still lists in its manifest, and a manifest-based
+//     sync never re-uploads an unchanged file, so they stay missing until
+//     their local content changes.
+func (c *Config) SyncTargetWarnings() []string {
+	var warnings []string
+	for _, pair := range c.Uploads {
+		for _, other := range c.Uploads {
+			if pair.Name == other.Name && pair.Remote == other.Remote {
+				continue
+			}
+			if effectiveStrategy(pair) != StrategySync || effectiveStrategy(other) != StrategyClean {
+				continue
+			}
+			syncTarget, cleanTarget := NormalizeRemote(pair.Remote), NormalizeRemote(other.Remote)
+			switch {
+			case syncTarget == cleanTarget || isUnder(syncTarget, cleanTarget):
+				warnings = append(warnings, fmt.Sprintf("deployments %q (sync into %q) and %q (clean over %q) overlap: the clean deletes the sync manifest along with the files it lists, so what the sync keeps is decided by run order (issue #278)",
+					pair.Label(), syncTarget, other.Label(), cleanTarget))
+			case isUnder(cleanTarget, syncTarget):
+				warnings = append(warnings, fmt.Sprintf("deployment %q runs 'mode: clean' over %q, inside the sync target %q of deployment %q: the clean deletes files the sync uploaded and still lists in its manifest, and a manifest-based sync never re-uploads an unchanged file, so they stay missing until their local content changes (issue #278)",
+					other.Label(), cleanTarget, syncTarget, pair.Label()))
+			}
+		}
+	}
+	return warnings
+}
+
+// effectiveStrategy mirrors uploader.effectiveStrategy for the two checks
+// above: an empty strategy means the v3 default, overlay.
+func effectiveStrategy(pair UploadPair) Strategy {
+	if pair.Strategy != "" {
+		return pair.Strategy
+	}
+	return StrategyOverlay
+}
+
+// isUnder reports whether sub is inside dir (strictly, not equal).
+func isUnder(sub, dir string) bool {
+	return dir != "" && dir != "/" && strings.HasPrefix(sub, dir) && (len(sub) == len(dir) || sub[len(dir)] == '/')
 }
