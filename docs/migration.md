@@ -211,8 +211,12 @@ ssh-keyscan sftp.example.com | ssh-keygen -lf -
 ```
 
 Put the `SHA256:...` line(s) into the `host-key` input (one per line; any
-match is accepted, so you can pin all of the server's keys at once). The
-verbatim `ssh-keyscan` output works too, via `known-hosts`.
+match is accepted, so you can pin all of the server's keys at once — with
+several keys, pinning all of them spares you having to find out which one
+the server would pick). The verbatim `ssh-keyscan` output works too, via
+`known-hosts`, and has an extra: easySFTP asks the server for exactly the
+key types present in those lines, so pinning a single key of a multi-key
+server just works.
 
 The fingerprint is a **public** value, so it does not have to live in a
 secret, though many people keep it in one anyway to avoid leaking the

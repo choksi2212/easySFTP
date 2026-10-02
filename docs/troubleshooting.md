@@ -112,6 +112,12 @@ The server rejected the credentials.
 
 The server presented a key that matches none of your pinned fingerprints.
 
+- First check the key *type* named in the message. A server has one key of
+  each type and presents whichever the client asks for, so if you pinned
+  only one of its keys (say the Ed25519 one) and the message names another
+  type, the server presented a different key of the same server, not an
+  impostor: pin that one too, pin all of its keys, or use `known-hosts`,
+  which asks the server for exactly the key types you pinned.
 - If the server was migrated or its keys rotated, re-run
   `ssh-keyscan <server> | ssh-keygen -lf -` and update the secret.
 - If you did **not** expect a key change, stop and investigate. This is
