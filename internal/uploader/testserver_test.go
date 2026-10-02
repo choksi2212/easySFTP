@@ -44,6 +44,7 @@ type testServer struct {
 	refuseFirst   int32 // if >0, close this many first accepted connections immediately
 	maxConns      int32 // if >0, close every connection accepted beyond this many
 	hangAfter     int32 // if >0, accept but never serve connections beyond this many
+	hangFrom      int32 // if >0, also never serve connections from this one on, the first included
 	maxLive       int32 // if >0, close connections accepted while this many are live
 	liveCount     int32 // live connections, for withMaxLiveConns
 	accepted      int32 // total connections accepted, for asserting attempt counts
@@ -262,6 +263,15 @@ func withMaxLiveConns(n int32) serverOption { return func(s *testServer) { s.max
 // with closeLiveConns to let the test finish.
 func withHangHandshakeAfter(n int32) serverOption {
 	return func(s *testServer) { s.hangAfter = n }
+}
+
+// withHangHandshakeFrom never serves connections from the n-th on either, the
+// first included when n is 1: the run meets a server that was already dead
+// before it started, not one that dies after serving the first connection.
+// That is the shape the initial connect and the jump-host tunnel see
+// (issue #277); withHangHandshakeAfter covers pooled dials and redials.
+func withHangHandshakeFrom(n int32) serverOption {
+	return func(s *testServer) { s.hangFrom = n }
 }
 
 // withKeepaliveCounter makes the server tally every "keepalive@openssh.com"
@@ -838,6 +848,33 @@ func (f *stallOnRequest) PosixRename(r *sftp.Request) error {
 	return posixRenamePassthrough(f.inner, r)
 }
 
+// stallOnStat blocks the first Stat of one exact path without responding,
+// simulating a server that completes the SSH handshake and the SFTP session
+// and then hangs the moment a request lands on it. The skip_unchanged
+// decision waits on exactly that stat (issue #277), which is the window the
+// fix moves inside the stall watchdog's active one. The block releases after
+// a generous safety timeout so an abandoned handler goroutine cannot outlive
+// the test binary for long (same pattern as stallOnRequest).
+type stallOnStat struct {
+	inner sftp.FileLister
+	path  string
+	fired atomic.Bool
+}
+
+func withStallOnStat(path string) serverOption {
+	return func(s *testServer) {
+		s.handlers.FileList = &stallOnStat{inner: s.handlers.FileList, path: path}
+	}
+}
+
+func (f *stallOnStat) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	if r.Method == "Stat" && r.Filepath == f.path && !f.fired.Swap(true) {
+		time.Sleep(30 * time.Second)
+		return nil, errors.New("stalled stat finally failed")
+	}
+	return f.inner.Filelist(r)
+}
+
 // dropConn closes the connection once it has read limit bytes, simulating a
 // network drop partway through a transfer.
 type dropConn struct {
@@ -908,7 +945,7 @@ func (s *testServer) acceptLoop() {
 			conn = &liveConn{Conn: conn, live: &s.liveCount}
 			atomic.AddInt32(&s.liveCount, 1)
 		}
-		if s.hangAfter > 0 && n > s.hangAfter {
+		if (s.hangAfter > 0 && n > s.hangAfter) || (s.hangFrom > 0 && n >= s.hangFrom) {
 			// Accepted and then ignored: the client blocks in the SSH
 			// handshake with no deadline of its own. Kept in liveConns so
 			// closeLiveConns can end the test.

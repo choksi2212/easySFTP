@@ -231,7 +231,7 @@ upgrading the server, and enable only the one algorithm the server needs.
 | Field | Default | Description |
 |---|---|---|
 | `retries` | `2` | Retries per file on transient errors, and the reconnect budget for dropped connections. Failures the server reports with a permanent status code are never retried; see [which upload failures are retried](troubleshooting.md#which-upload-failures-easysftp-retries). `0` disables. |
-| `timeout` | `30` | Connection timeout in seconds. `0` disables. |
+| `timeout` | `30` | Connection timeout in seconds, covering the whole initial connection: the TCP dial, the SSH handshake of every hop (including through a jump host) and the SFTP session setup. A server that accepts and then stalls fails here instead of hanging the run. `0` disables. |
 | `stall_timeout` | `0` (off) | Abort when active remote operations make no progress for this many seconds. |
 | `concurrency` | `auto` | Files uploaded in parallel, and independent remote metadata requests such as directory setup, stale-temp cleanup, scans and deletes. `auto` sizes it to the work (see [transfer tuning](tuning.md)). Sync hashing uses the runner's available Go CPU parallelism independently. |
 | `request_concurrency` | `auto` | Max in-flight SFTP requests per file (pipelining within one transfer). `auto` sizes it to the largest file and to what the whole set costs to hold in flight (see [transfer tuning](tuning.md)). |
