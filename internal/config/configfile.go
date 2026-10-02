@@ -33,7 +33,7 @@ type yamlConnection struct {
 	Host            string         `yaml:"host"`
 	Port            int            `yaml:"port"`
 	Username        string         `yaml:"username"`
-	HostKey         fingerprints  `yaml:"host_key"`
+	HostKey         fingerprints   `yaml:"host_key"`
 	KnownHosts      string         `yaml:"known_hosts"`
 	AllowAnyHostKey bool           `yaml:"allow_any_host_key"`
 	Algorithms      yamlAlgorithms `yaml:"algorithms"`
@@ -48,12 +48,12 @@ type yamlAlgorithms struct {
 }
 
 type yamlProxy struct {
-	Host            string        `yaml:"host"`
-	Port            int           `yaml:"port"`
-	Username        string        `yaml:"username"`
-	HostKey         fingerprints  `yaml:"host_key"`
-	KnownHosts      string        `yaml:"known_hosts"`
-	AllowAnyHostKey bool          `yaml:"allow_any_host_key"`
+	Host            string       `yaml:"host"`
+	Port            int          `yaml:"port"`
+	Username        string       `yaml:"username"`
+	HostKey         fingerprints `yaml:"host_key"`
+	KnownHosts      string       `yaml:"known_hosts"`
+	AllowAnyHostKey bool         `yaml:"allow_any_host_key"`
 }
 
 // fingerprints is a host_key value: either a block scalar with one
@@ -183,6 +183,15 @@ var allowedKeys = map[string][]string{
 // Walk those instead of reporting "<<" as unknown, and keep walking when the
 // merge value is a sequence of aliases, which YAML also allows.
 func checkKeys(node *yaml.Node, section, location string) error {
+	return checkKeysVisited(node, section, location, map[*yaml.Node]bool{})
+}
+
+// checkKeysVisited is checkKeys carrying the set of alias targets already
+// walked, so a self-referential merge key (a: &a with <<: *a inside it)
+// fails with the unknown-option error instead of recursing until the stack
+// overflows. yaml.v3 itself resolves such loops only when decoding, and the
+// walk here predates that, so the guard belongs here.
+func checkKeysVisited(node *yaml.Node, section, location string, visited map[*yaml.Node]bool) error {
 	if node.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -208,7 +217,11 @@ func checkKeys(node *yaml.Node, section, location string) error {
 				}
 			}
 			for _, target := range targets {
-				if err := checkKeys(target, section, location); err != nil {
+				if visited[target] {
+					return fmt.Errorf("cyclic merge at %q: a merge key refers back to the mapping that contains it", at)
+				}
+				visited[target] = true
+				if err := checkKeysVisited(target, section, location, visited); err != nil {
 					return err
 				}
 			}
@@ -229,14 +242,14 @@ func checkKeys(node *yaml.Node, section, location string) error {
 			sub = section + "." + key.Value
 		}
 		if _, ok := allowedKeys[sub]; ok {
-			if err := checkKeys(value, sub, at); err != nil {
+			if err := checkKeysVisited(value, sub, at, visited); err != nil {
 				return err
 			}
 		}
 		if (section == "" && key.Value == "deployments") && value.Kind == yaml.MappingNode {
 			for j := 0; j+1 < len(value.Content); j += 2 {
 				name, dep := value.Content[j].Value, value.Content[j+1]
-				if err := checkKeys(dep, "deployments.*", "deployments."+name); err != nil {
+				if err := checkKeysVisited(dep, "deployments.*", "deployments."+name, visited); err != nil {
 					return err
 				}
 			}

@@ -241,7 +241,6 @@ deployments:
 	}
 }
 
-
 // TestConfigFileParserGaps covers the six config-file parser gaps from
 // issue #286: a valid YAML idiom failing as an unknown option, a natural
 // spelling failing with the decoder's raw error, and four silent no-ops.
@@ -286,6 +285,39 @@ deployments:
 `)
 		if err != nil {
 			t.Fatalf("a merge sequence was rejected: %v", err)
+		}
+	})
+	t.Run("cyclic merge key fails cleanly instead of overflowing", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  site: &site
+    <<: *site
+    source: dist
+    target: /a
+`)
+		if err == nil {
+			t.Fatal("a cyclic merge key was accepted")
+		}
+		if !strings.Contains(err.Error(), "cyclic merge") {
+			t.Fatalf("expected a cyclic-merge error, got %v", err)
+		}
+	})
+	// Direct self-merge through a mapping value, the shape the maintainer
+	// flagged: a: &a with <<: *a inside it.
+	t.Run("self-referential merge key fails cleanly instead of overflowing", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  site: &site
+    <<: *site
+    source: dist
+    target: /a
+  staging:
+    <<: *site
+    target: /b
+`)
+		if err == nil {
+			t.Fatal("a self-referential merge key was accepted")
+		}
+		if !strings.Contains(err.Error(), "cyclic merge") {
+			t.Fatalf("expected a cyclic-merge error, got %v", err)
 		}
 	})
 	t.Run("a typo inside an anchored mapping is still caught", func(t *testing.T) {
