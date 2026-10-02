@@ -148,11 +148,11 @@ func uploadFiles(ctx context.Context, cfg *config.Config, sess *session, files, 
 			// The stat is read-only, so it also runs in dry-run mode: the
 			// preview then reports the same skips the real run would.
 			if skipUnchanged {
-				client, _, _ := sess.acquire(i)
-				done := metrics.Op("sftp_stat")
-				fi, err := client.Stat(f.remotePath)
-				done(err)
-				if err == nil && fi.Mode().IsRegular() && fi.Size() == f.size {
+				same, err := remoteSameSize(ctx, env, f, i)
+				if err != nil {
+					return err
+				}
+				if same {
 					if cfg.LogPerFile() {
 						log.Infof("%sskip %s (remote file has the same size)", verb, f.remotePath)
 					}
@@ -598,4 +598,48 @@ func (c *ctxReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return c.r.Read(p)
+}
+
+// remoteSameSize reports whether f's remote counterpart exists as a regular
+// file of the same size, the condition advanced.skip_unchanged skips on.
+//
+// The stat runs inside the watchdog's active window. Before issue #277 it sat
+// outside it, so a server that hangs on Stat (healthy enough to connect, dead
+// the moment a request lands on it) stalled the run without ever firing the
+// watchdog: no transfer had started, so there was nothing "active" to watch.
+// A connection-class failure is retried against a fresh connection like any
+// other, instead of being read as "the file changed" — which uploaded files
+// that may not have changed, and reported them as "would upload" in a dry run.
+func remoteSameSize(ctx context.Context, env *transferEnv, f fileItem, index int) (bool, error) {
+	sess, watch := env.sess, env.watch
+	for {
+		client, c, gen := sess.acquire(index)
+		if watch != nil {
+			watch.begin()
+		}
+		done := metrics.Op("sftp_stat")
+		fi, err := client.Stat(f.remotePath)
+		done(err)
+		if watch != nil {
+			watch.end()
+		}
+		if err == nil {
+			return fi.Mode().IsRegular() && fi.Size() == f.size, nil
+		}
+		if !isConnError(err) {
+			// The normal case is "no such file" (nothing to skip); anything
+			// else the server says about the path is a reason to upload,
+			// same reading as before.
+			return false, nil
+		}
+		// A stat killed by the stall watchdog is not redialed: the server
+		// has already had its stall_timeout window, and redialing it would
+		// just stall again (mirrors uploadFileWithRetry).
+		if watch != nil && watch.fired.Load() {
+			return false, err
+		}
+		if _, rerr := sess.reconnect(ctx, c, gen); rerr != nil {
+			return false, fmt.Errorf("stat %s: %w (%v)", f.remotePath, err, rerr)
+		}
+	}
 }

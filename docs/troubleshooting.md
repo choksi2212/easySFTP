@@ -64,7 +64,9 @@ The runner cannot reach the server.
   [changing IP ranges](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners#ip-addresses),
   so an IP allowlist usually requires a self-hosted runner or a relaxed rule.
 - Raise the timeout (`advanced.timeout` in the config file, default 30 s) if
-  the server is just slow to accept connections.
+  the server is just slow to accept connections. The timeout covers the whole
+  initial connection — TCP dial, SSH handshake (including through a jump
+  host) and SFTP session setup — so a stalled handshake fails within it too.
 
 ### A large deploy dies partway through with an EOF or "connection lost"
 

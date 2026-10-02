@@ -452,7 +452,9 @@ func (quietLogger) Warningf(string, ...any) {}
 // the case the watchdog exists for (an unhealthy server) is exactly the case
 // where the redial it was waiting behind hangs. With advanced.timeout at 0,
 // documented as the no-timeout escape hatch, connect() has no deadline of its
-// own and the watchdog could be prevented from ever firing (issue #224).
+// own and the watchdog could be prevented from ever firing (issue #224); with
+// it positive, connect() is now itself bounded by it (issue #277), so the
+// in-flight window below is too.
 //
 // What is left is that a handshake already in flight is not interrupted; a
 // kill that lands during one is honored when it returns, by closing the fresh
