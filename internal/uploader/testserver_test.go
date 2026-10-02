@@ -44,6 +44,8 @@ type testServer struct {
 	refuseFirst   int32 // if >0, close this many first accepted connections immediately
 	maxConns      int32 // if >0, close every connection accepted beyond this many
 	hangAfter     int32 // if >0, accept but never serve connections beyond this many
+	maxLive       int32 // if >0, close connections accepted while this many are live
+	liveCount     int32 // live connections, for withMaxLiveConns
 	accepted      int32 // total connections accepted, for asserting attempt counts
 
 	keepalives *int64 // if set, counts "keepalive@openssh.com" global requests received
@@ -229,6 +231,28 @@ func withRefuseFirstConns(n int32) serverOption { return func(s *testServer) { s
 // simulating a server that caps concurrent connections (sshd's MaxStartups,
 // or a per-account limit on shared hosting).
 func withMaxConns(n int32) serverOption { return func(s *testServer) { s.maxConns = n } }
+
+// liveConn decrements the server's live-connection count when it is closed,
+// so withMaxLiveConns sees connections leave as well as arrive; the once is
+// because a connection can be closed more than once (closeLiveConns and the
+// SSH handshake's own teardown both reach the socket).
+type liveConn struct {
+	net.Conn
+	once sync.Once
+	live *int32
+}
+
+func (c *liveConn) Close() error {
+	c.once.Do(func() { atomic.AddInt32(c.live, -1) })
+	return c.Conn.Close()
+}
+
+// withMaxLiveConns closes every connection accepted while n connections are
+// already live, simulating a server whose limit is concurrent (sshd's
+// MaxSessions, or a per-account limit on shared hosting): once one run's
+// connections are closed the next run's are welcome again, which is the
+// difference between this and withMaxConns' lifetime budget.
+func withMaxLiveConns(n int32) serverOption { return func(s *testServer) { s.maxLive = n } }
 
 // withHangHandshakeAfter accepts connections beyond the first n but never
 // serves them, so the client hangs in the SSH handshake instead of failing.
@@ -876,6 +900,14 @@ func (s *testServer) acceptLoop() {
 			conn.Close()
 			continue
 		}
+		if s.maxLive > 0 {
+			if atomic.LoadInt32(&s.liveCount) >= s.maxLive {
+				conn.Close()
+				continue
+			}
+			conn = &liveConn{Conn: conn, live: &s.liveCount}
+			atomic.AddInt32(&s.liveCount, 1)
+		}
 		if s.hangAfter > 0 && n > s.hangAfter {
 			// Accepted and then ignored: the client blocks in the SSH
 			// handshake with no deadline of its own. Kept in liveConns so
@@ -902,6 +934,9 @@ func (s *testServer) acceptLoop() {
 func (s *testServer) handleConn(conn net.Conn) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
 	if err != nil {
+		// A handshake that never completed still holds a live-connection
+		// slot in withMaxLiveConns' count; give it back.
+		conn.Close()
 		return
 	}
 	defer sshConn.Close()

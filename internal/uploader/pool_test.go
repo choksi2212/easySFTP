@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/eiserv/easySFTP/internal/autotune"
 	"github.com/eiserv/easySFTP/internal/config"
 )
 
@@ -110,6 +112,99 @@ func TestConnectionPoolDegradesWhenServerRefusesConnections(t *testing.T) {
 	}
 	if !containsSubstring(log.warnings, "continues on its first connection") {
 		t.Errorf("expected a warning about the refused connection, got %v", log.warnings)
+	}
+}
+
+// TestGrantedCountsTheConnectionsTheServerGave pins the other half of a
+// refusal: what the run remembers about the server must be how many
+// connections it was actually granted, not how many pool slots the run
+// touched. A refused slot is aliased to the first connection (see acquire), so
+// a walk that counts non-nil slots answers "the spread" and the next run asks
+// for the same refused connections again (issue #281).
+//
+// The workers start together, the way a real upload phase does, so several
+// slots are already waiting for their own connection when the refusal lands
+// and they are aliased as well: withMaxConns(2) grants the initial connection
+// plus one dial, and everything past that must count as one, not as its slot.
+func TestGrantedCountsTheConnectionsTheServerGave(t *testing.T) {
+	srv := startTestServer(t, withMaxConns(2))
+	cfg := autoConfig(srv)
+
+	tune := newTuning(cfg)
+	tune.resolveRunWide(autotune.Workload{Uploads: 100, UploadBytes: 1 << 20, LargestUpload: 1 << 12})
+
+	log := &recordingLogger{testLogger: testLogger{t}}
+	sess, err := newSession(context.Background(), cfg, tune, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.close()
+
+	if got := sess.setSpread(4); got != 4 {
+		t.Fatalf("setSpread(4) = %d, want the pool to widen before anything is dialed", got)
+	}
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if client, _, _ := sess.acquire(i); client == nil {
+				t.Errorf("acquire(%d) returned no client", i)
+			}
+		}()
+	}
+	wg.Wait()
+
+	granted, refused := sess.granted()
+	if !refused {
+		t.Fatal("the server refused a dial, but the session does not remember it")
+	}
+	if granted != 2 {
+		t.Errorf("granted() = %d, want 2: the initial connection plus the one extra the server allowed", granted)
+	}
+}
+
+// TestGrantedCountsAliasesWithPinnedConnections is the same walk with
+// advanced.connections pinned: the refusal is phrased differently and the
+// spread is not pulled back (a pinned value is never clamped), but the number
+// the run remembers still has to be the grant, because the cache writes it
+// either way.
+func TestGrantedCountsAliasesWithPinnedConnections(t *testing.T) {
+	srv := startTestServer(t, withMaxConns(1))
+	cfg := baseConfig(srv)
+	cfg.Connections = 4
+
+	tune := newTuning(cfg)
+	tune.resolveRunWide(autotune.Workload{Uploads: 100, UploadBytes: 1 << 20, LargestUpload: 1 << 12})
+
+	log := &recordingLogger{testLogger: testLogger{t}}
+	sess, err := newSession(context.Background(), cfg, tune, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.close()
+
+	if got := sess.setSpread(4); got != 4 {
+		t.Fatalf("setSpread(4) = %d, want the pool to widen before anything is dialed", got)
+	}
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if client, _, _ := sess.acquire(i); client == nil {
+				t.Errorf("acquire(%d) returned no client", i)
+			}
+		}()
+	}
+	wg.Wait()
+
+	granted, refused := sess.granted()
+	if !refused {
+		t.Fatal("the server refused a dial, but the session does not remember it")
+	}
+	if granted != 1 {
+		t.Errorf("granted() = %d, want 1: only the initial connection was allowed", granted)
 	}
 }
 

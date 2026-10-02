@@ -379,15 +379,26 @@ func closeConn(c *conn) {
 	c.closeJump()
 }
 
-// openSlots counts the leading slots that already hold their own connection,
-// which is how many the server has actually granted. Must be called with s.mu
-// held.
+// openSlots counts how many distinct connections the leading touched slots
+// hold, which is how many the server has actually granted. A slot the server
+// refused is not left empty: acquire points it at the first connection so the
+// worker that asked for it still has a client (see noteDialFailure), and a
+// slot like that must not count as granted, or a run that asked for four and
+// was given two would remember the answer as four. eachConn skips the same
+// aliases for the same reason; this walk stops at the first untouched slot as
+// well, so a pool whose tail was never dialed counts only what it reached.
+// Must be called with s.mu held.
 func (s *session) openSlots() int {
+	seen := make(map[*conn]bool, len(s.conns))
 	n := 0
 	for _, c := range s.conns {
 		if c == nil {
 			break
 		}
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
 		n++
 	}
 	return max(n, 1)
