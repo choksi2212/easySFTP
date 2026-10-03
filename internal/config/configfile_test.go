@@ -308,6 +308,47 @@ deployments:
 			t.Fatalf("a lone trailing --- must not fail the file: %v", err)
 		}
 	})
+	t.Run("content in a third document after an empty second is refused", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  web:
+    source: a
+    target: /b
+---
+---
+version: 3
+`)
+		if err == nil || !strings.Contains(err.Error(), "document 3 starts at line") {
+			t.Fatalf("expected the third document to be refused, got %v", err)
+		}
+	})
+	t.Run("several lone trailing separators still load", func(t *testing.T) {
+		_, err := loadFile(t, base+`deployments:
+  web:
+    source: a
+    target: /b
+---
+---
+`)
+		if err != nil {
+			t.Fatalf("lone trailing separators must not fail the file: %v", err)
+		}
+	})
+	t.Run("a quoted merge key is not exempted from the key check", func(t *testing.T) {
+		// yaml.v3 ignores a quoted "<<" (tag !!str, not !!merge): the
+		// decoder never merges it. The checker must not treat it as a
+		// merge either, which makes it an ordinary key - unknown in every
+		// section - so the run fails loudly instead of the quoted merge
+		// and everything under it becoming a silent no-op.
+		_, err := loadFile(t, base+`deployments:
+  web:
+    "<<":
+      source: dist
+      target: /b
+`)
+		if err == nil || !strings.Contains(err.Error(), `unknown option "<<"`) {
+			t.Fatalf("expected the quoted merge key itself to be refused, got %v", err)
+		}
+	})
 	t.Run("a second document with content is still refused", func(t *testing.T) {
 		_, err := loadFile(t, base+`deployments:
   web:

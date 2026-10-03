@@ -186,6 +186,15 @@ func checkKeys(node *yaml.Node, section, location string) error {
 	return checkKeysVisited(node, section, location, map[*yaml.Node]bool{})
 }
 
+// isMergeKey reports whether key is a merge key in the decoder's sense:
+// the unquoted '<<' token, which yaml.v3 resolves during decoding. A quoted
+// '<<' carries the !!str tag instead of !!merge and is ignored by the
+// decoder, so treating it as a merge would exempt a real option from the
+// key check and let its typo'd keys through as silent no-ops.
+func isMergeKey(key *yaml.Node) bool {
+	return key.Tag == "!!merge" || (key.Value == "<<" && key.Tag != "!!str")
+}
+
 // checkKeysVisited is checkKeys carrying the set of alias targets already
 // walked, so a self-referential merge key (a: &a with <<: *a inside it)
 // fails with a cyclic-merge error instead of recursing until the stack
@@ -202,7 +211,7 @@ func checkKeysVisited(node *yaml.Node, section, location string, visited map[*ya
 		if location != "" {
 			at = location + "." + key.Value
 		}
-		if key.Value == "<<" {
+		if isMergeKey(key) {
 			// A merge key's value is an alias node or a sequence of alias
 			// nodes; each alias target is a mapping whose keys must be
 			// checked like the enclosing section's own keys.
@@ -332,10 +341,10 @@ func minInt(vals ...int) int {
 // because YAML's int parsed something enormous.
 const maxConfiguredSeconds = 24 * 60 * 60
 
-// isEmptySecondDocument reports whether a decoded second document carries
-// no content: a document node whose single scalar is null (a trailing ---
-// or one followed by comments only). Files ending that way loaded fine
-// before the decoder swap and must keep loading.
+// isEmptySecondDocument reports whether a decoded document after the
+// first carries no content: a document node whose single scalar is null
+// (a lone --- or one followed by comments only). Files ending that way
+// loaded fine before the decoder swap and must keep loading.
 func isEmptySecondDocument(node *yaml.Node) bool {
 	if len(node.Content) != 1 {
 		return false
@@ -367,22 +376,28 @@ func loadConfigFile(cfg *Config, path string) error {
 	if err := dec.Decode(&root); err != nil && err != io.EOF {
 		return fail(err)
 	}
-	var second yaml.Node
-	if err := dec.Decode(&second); err != io.EOF {
+	// Read to EOF: an empty document after the first is a lone trailing
+	// separator and loads, but a non-empty one anywhere after the first
+	// must be refused with its line - stopping after the second document
+	// would leave a third silently ignored.
+	docNo := 2
+	for {
+		var next yaml.Node
+		err := dec.Decode(&next)
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
 			return fail(err)
 		}
-		// A lone '---' at the end of a file is a document node holding
-		// a single null scalar. Nothing was pasted under it, so the file
-		// is what it always was; refuse only a second document with
-		// content, naming the line it starts on.
-		if !isEmptySecondDocument(&second) {
+		if !isEmptySecondDocument(&next) {
 			line := 0
-			if len(second.Content) > 0 {
-				line = second.Content[0].Line
+			if len(next.Content) > 0 {
+				line = next.Content[0].Line
 			}
-			return fail(fmt.Errorf("the file contains more than one YAML document (document 2 starts at line %d); easySFTP reads a single configuration, so combine the documents into one", line))
+			return fail(fmt.Errorf("the file contains more than one YAML document (document %d starts at line %d); easySFTP reads a single configuration, so combine the documents into one", docNo, line))
 		}
+		docNo++
 	}
 	if len(root.Content) > 0 {
 		if err := checkKeys(root.Content[0], "", ""); err != nil {
