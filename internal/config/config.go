@@ -562,7 +562,7 @@ func (c *Config) checkSyncTargets() error {
 		if effectiveStrategy(pair) != StrategySync {
 			continue
 		}
-		target := NormalizeRemote(pair.Remote)
+		target := foldDriveSpelling(NormalizeRemote(pair.Remote))
 		if first, ok := seen[target]; ok {
 			return syncSharedTargetError(first, pair)
 		}
@@ -626,20 +626,44 @@ func parseMode(s, name string) (*fs.FileMode, error) {
 }
 
 // NormalizeRemote converts a remote path to a clean slash path: backslashes
-// become slashes and path.Clean resolves ".", ".." and duplicate separators.
-// It is the one normalizer the whole codebase compares remote paths through:
-// the uploader's normalizeRemote delegates here, so a target spelled
-// "C:\www", "C:/www/" and "/C:/www/." is one path to every check that compares
-// targets, not just to the ones that happen to share a package.
+// become slashes and path.Clean resolves ".", ".." and duplicate separators,
+// so "C:\www", "C:/www/" and "C:/www/." are one path. The leading-slash
+// drive spelling is the one form path.Clean does not unify: "/C:/www"
+// keeps its slash and stays a different string, although it names the same
+// directory on a Windows SFTP server as "C:/www". Comparisons that must
+// treat the two drive spellings as one fold them with foldDriveSpelling,
+// the same way the drive-root guard accepts both "X:" and "/X:"
+// (isDriveRoot); the normalized string itself is what goes over the wire,
+// so it keeps the spelling the configuration wrote.
 func NormalizeRemote(remote string) string {
 	return path.Clean(strings.ReplaceAll(remote, "\\", "/"))
+}
+
+// foldDriveSpelling collapses the leading-slash drive spelling "/C:/www"
+// into "C:/www" for comparisons: a Windows SFTP server addresses a drive
+// both ways, so two targets spelled one way each name the same directory.
+// path.Clean keeps the leading slash, which is why the drive-root guard
+// accepts both "X:" and "/X:" instead of normalizing; target comparisons
+// fold here for the same reason. Only the comparison key changes: the
+// normalized spelling itself is what goes over the wire.
+func foldDriveSpelling(p string) string {
+	if len(p) >= 3 && p[0] == '/' && isDriveLetter(p[1]) && p[2] == ':' {
+		return p[1:]
+	}
+	return p
+}
+
+// isDriveLetter reports whether c is a single ASCII drive letter, either
+// case, matching the drive-root guard's own check.
+func isDriveLetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // syncSharedTargetError phrases the refusal for two sync deployments whose
 // targets normalize to the same path, next to the check that produces it.
 func syncSharedTargetError(a, b UploadPair) error {
-	return fmt.Errorf("deployments %q and %q both run 'mode: sync' into target %q: they would read and write the same sync manifest and delete each other's files in a run that finishes green; merge the two sources into one directory before deploying, or give each deployment its own subdirectory (issue #278)",
-		a.Label(), b.Label(), NormalizeRemote(a.Remote))
+	return fmt.Errorf("deployments %q and %q both run 'mode: sync' into target %q: they would read and write the same sync manifest and delete each other's files in a run that finishes green; merge the two sources into one directory before deploying, or give each deployment its own subdirectory",
+		a.Label(), b.Label(), foldDriveSpelling(NormalizeRemote(a.Remote)))
 }
 
 // SyncTargetWarnings returns one warning per target overlap between a sync
@@ -666,13 +690,13 @@ func (c *Config) SyncTargetWarnings() []string {
 			if effectiveStrategy(pair) != StrategySync || effectiveStrategy(other) != StrategyClean {
 				continue
 			}
-			syncTarget, cleanTarget := NormalizeRemote(pair.Remote), NormalizeRemote(other.Remote)
+			syncTarget, cleanTarget := foldDriveSpelling(NormalizeRemote(pair.Remote)), foldDriveSpelling(NormalizeRemote(other.Remote))
 			switch {
 			case syncTarget == cleanTarget || isUnder(syncTarget, cleanTarget):
-				warnings = append(warnings, fmt.Sprintf("deployments %q (sync into %q) and %q (clean over %q) overlap: the clean deletes the sync manifest along with the files it lists, so what the sync keeps is decided by run order (issue #278)",
+				warnings = append(warnings, fmt.Sprintf("deployments %q (sync into %q) and %q (clean over %q) overlap: the clean deletes the sync manifest along with the files it lists, so what the sync keeps is decided by run order",
 					pair.Label(), syncTarget, other.Label(), cleanTarget))
 			case isUnder(cleanTarget, syncTarget):
-				warnings = append(warnings, fmt.Sprintf("deployment %q runs 'mode: clean' over %q, inside the sync target %q of deployment %q: the clean deletes files the sync uploaded and still lists in its manifest, and a manifest-based sync never re-uploads an unchanged file, so they stay missing until their local content changes (issue #278)",
+				warnings = append(warnings, fmt.Sprintf("deployment %q runs 'mode: clean' over %q, inside the sync target %q of deployment %q: the clean deletes files the sync uploaded and still lists in its manifest, and a manifest-based sync never re-uploads an unchanged file, so they stay missing until their local content changes",
 					other.Label(), cleanTarget, syncTarget, pair.Label()))
 			}
 		}

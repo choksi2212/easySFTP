@@ -37,17 +37,63 @@ func TestValidateRefusesTwoSyncDeploymentsIntoOneTarget(t *testing.T) {
 	}
 }
 
-// Every spelling of the same directory is one path: a trailing slash, a
-// backslash and a climbing ".." must not slip past the comparison the way
-// they slip past a string equality check.
+// Every spelling of the same directory is one path: a trailing slash, an
+// interior dot, a climbing ".." and a backslash spelling must not slip
+// past the comparison the way they slip past a string equality check.
 func TestValidateRefusesSyncTargetsThatDifferOnlyInSpelling(t *testing.T) {
+	for _, spelling := range []string{
+		"/var/www/html/",       // trailing slash
+		"/var/www/html/./",     // interior dot
+		"/var/www/html/sub/..", // climbing ..
+		`\var\www\html`,        // backslashes
+	} {
+		cfg := baseSyncConfig()
+		cfg.Uploads = []UploadPair{
+			{Name: "site", Local: "dist", Remote: "/var/www/html", Strategy: StrategySync},
+			{Name: "assets", Local: "assets-build", Remote: spelling, Strategy: StrategySync},
+		}
+		err := cfg.validate()
+		if err == nil {
+			t.Errorf("spelling %q must normalize to the same target and be refused", spelling)
+			continue
+		}
+		if !strings.Contains(err.Error(), `deployments "site" and "assets"`) {
+			t.Errorf("refusal for spelling %q should name both deployments, got %q", spelling, err)
+		}
+	}
+}
+
+// The two ways a Windows SFTP server addresses a drive, "C:/www" and
+// "/C:/www", name the same directory, and path.Clean keeps them distinct.
+// The drive-root guard already folds the two forms (isDriveRoot accepts
+// both "X:" and "/X:"), so the shared-target refusal must too, or one sync
+// spelled each way shares a manifest in silence.
+func TestValidateRefusesSyncTargetsThatDifferOnlyInDriveSpelling(t *testing.T) {
 	cfg := baseSyncConfig()
 	cfg.Uploads = []UploadPair{
-		{Name: "site", Local: "dist", Remote: "/var/www/html", Strategy: StrategySync},
-		{Name: "assets", Local: "assets-build", Remote: `\var\www\html\`, Strategy: StrategySync},
+		{Name: "site", Local: "dist", Remote: "C:/www", Strategy: StrategySync},
+		{Name: "assets", Local: "assets-build", Remote: "/C:/www", Strategy: StrategySync},
 	}
-	if err := cfg.validate(); err == nil {
-		t.Fatal("expected target spellings that normalize to the same path to be refused")
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected the two drive spellings of one target to be refused")
+	}
+	if !strings.Contains(err.Error(), `deployments "site" and "assets"`) {
+		t.Errorf("error should name both deployments, got %q", err)
+	}
+}
+
+// The warnings fold drive spellings as well, so the clean-overlap detection
+// cannot be dodged by spelling the two targets one way each.
+func TestSyncTargetWarningsFoldDriveSpellings(t *testing.T) {
+	cfg := baseSyncConfig()
+	cfg.Uploads = []UploadPair{
+		{Name: "site", Local: "dist", Remote: "C:/www", Strategy: StrategySync},
+		{Name: "reset", Local: "empty", Remote: "/C:/www", Strategy: StrategyClean},
+	}
+	warnings := cfg.SyncTargetWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning for the drive-spelled overlap, got %d: %v", len(warnings), warnings)
 	}
 }
 
