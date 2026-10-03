@@ -142,24 +142,28 @@ func buildPlan(pair config.UploadPair, strategy config.Strategy, opts planOption
 			walkRoot = resolved
 		}
 	}
-	if walkRoot == pair.Local && isWindowsJunction(pair.Local) {
-		// Windows junctions: os.Stat follows them but WalkDir refuses to
-		// descend, and EvalSymlinks does not resolve them at all. Open
-		// the reparse point for its final path - the same resolution
-		// os.Stat performs - and walk the real directory. A failure here
-		// fails the run: silently walking the junction instead would
-		// reproduce the empty plan, which for clean and sync deletes the
-		// target's contents on a green run.
-		resolved, rerr := resolveWindowsJunction(pair.Local)
+	// Windows junctions: os.Stat follows them but WalkDir refuses to
+	// descend, and EvalSymlinks does not resolve them at all - including
+	// when it just resolved a symlink that points at a junction, in which
+	// case the walked root lands on the junction and the plan comes back
+	// empty again. Loop the reparse-point resolution until the root stops
+	// moving: each pass opens the final path of the current root, the
+	// same resolution os.Stat performs. A failure fails the run, because
+	// silently walking the junction instead would reproduce the empty
+	// plan, which for clean and sync deletes the target's contents on a
+	// green run.
+	for isWindowsJunction(walkRoot) {
+		resolved, rerr := resolveWindowsJunction(walkRoot)
 		if rerr != nil {
-			return p, fmt.Errorf("local path %s is a junction but its target could not be resolved: %w", pair.Local, rerr)
+			return p, fmt.Errorf("local path %s is a junction but its target could not be resolved: %w", walkRoot, rerr)
 		}
-		if resolved != pair.Local {
-			if verbose != nil {
-				verbose.Infof("source %s is a junction to %s; walking the target directory", pair.Local, resolved)
-			}
-			walkRoot = resolved
+		if resolved == walkRoot {
+			break
 		}
+		if verbose != nil {
+			verbose.Infof("source %s is a junction to %s; walking the target directory", walkRoot, resolved)
+		}
+		walkRoot = resolved
 	}
 
 	err = filepath.WalkDir(walkRoot, func(fpath string, d fs.DirEntry, err error) error {

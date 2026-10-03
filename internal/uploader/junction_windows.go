@@ -67,10 +67,25 @@ func resolveWindowsJunction(path string) (string, error) {
 	if n == 0 || n >= bufLen {
 		return "", fmt.Errorf("GetFinalPathNameByHandle failed for %s", path)
 	}
-	resolved := syscall.UTF16ToString(buf[:n])
-	resolved = filepath.Clean(strings.TrimPrefix(resolved, `\\?\`))
+	resolved := trimFinalPath(syscall.UTF16ToString(buf[:n]))
 	if resolved == "" {
 		return "", fmt.Errorf("junction %s resolved to an empty path", path)
 	}
 	return resolved, nil
+}
+
+// trimFinalPath reduces the extended-length form GetFinalPathNameByHandleW
+// returns to the spelling every other API accepts: the \\?\ prefix comes
+// off a local volume path (a drive path keeps its drive), and a network
+// path's \\?\UNC\ prefix becomes the ordinary \\server\share UNC form
+// rather than being stripped wholesale, which would corrupt it into a
+// bogus relative local path.
+func trimFinalPath(resolved string) string {
+	switch {
+	case strings.HasPrefix(resolved, `\\?\UNC\`):
+		resolved = `\\` + strings.TrimPrefix(resolved, `\\?\UNC\`)
+	case strings.HasPrefix(resolved, `\\?\`):
+		resolved = strings.TrimPrefix(resolved, `\\?\`)
+	}
+	return filepath.Clean(resolved)
 }
