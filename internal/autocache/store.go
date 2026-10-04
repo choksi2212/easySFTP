@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -14,7 +15,9 @@ import (
 // deployment and there is no reason for it to be world readable.
 const fileMode = 0o600
 
-const (
+// The lock timings are vars so a test can shrink the wait instead of
+// sleeping through the real three seconds.
+var (
 	lockWait  = 3 * time.Second
 	lockStale = 10 * time.Minute
 	lockPoll  = 25 * time.Millisecond
@@ -136,6 +139,13 @@ func saveUnlocked(path string, s *Store) error {
 // held only around a tiny JSON read and atomic write. A killed process can
 // leave the sidecar behind, so an old lock is recoverable; a fresh lock that
 // does not clear within lockWait costs a cache warning, never the deploy.
+//
+// On Windows a create can also be denied outright while the lock is being
+// removed: the previous holder's delete has marked the sidecar delete-pending,
+// the name only disappears once the last share-delete handle closes, and a
+// create that lands in that window gets ERROR_ACCESS_DENIED instead of
+// ERROR_FILE_EXISTS. A denial there is polled like a busy lock; one that
+// persists past lockWait surfaces at the deadline with the create error.
 func withStoreLock(path string, fn func() error) error {
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
@@ -143,10 +153,33 @@ func withStoreLock(path string, fn func() error) error {
 			return err
 		}
 	}
-	lockPath := path + ".lock"
+	return lockPollLoop(path+".lock", fn)
+}
+
+// lockCreate is the lock acquisition primitive, split out so tests can fault
+// the create the way the platform does, without creating the sidecar.
+var lockCreate = func(lockPath string) (*os.File, error) {
+	return os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+}
+
+// lockCreateDeniedIsBusy reports whether a denied lock create means the lock
+// is taken and should be polled, instead of a permission problem worth
+// failing fast on. Only Windows does this: a create that races the previous
+// holder's remove of the sidecar is denied outright, because the remove has
+// left the name delete-pending and the name only disappears once the last
+// share-delete handle (an antivirus scan, a backup agent) closes. Everywhere
+// else a denied create is a real permission problem, so it is returned as is.
+func lockCreateDeniedIsBusy(err error) bool {
+	return runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission)
+}
+
+// lockPollLoop is the poll loop withStoreLock's comment describes, taking the
+// resolved sidecar path. ErrExist is the normal busy signal; on Windows a
+// denied create (the delete-pending race above) is polled the same way.
+func lockPollLoop(lockPath string, fn func() error) error {
 	deadline := time.Now().Add(lockWait)
 	for {
-		lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+		lock, err := lockCreate(lockPath)
 		if err == nil {
 			name := lock.Name()
 			if _, writeErr := fmt.Fprintf(lock, "%d\n", os.Getpid()); writeErr != nil {
@@ -161,7 +194,7 @@ func withStoreLock(path string, fn func() error) error {
 			defer os.Remove(name)
 			return fn()
 		}
-		if !errors.Is(err, os.ErrExist) {
+		if !errors.Is(err, os.ErrExist) && !lockCreateDeniedIsBusy(err) {
 			return err
 		}
 		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > lockStale {
@@ -170,7 +203,7 @@ func withStoreLock(path string, fn func() error) error {
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for concurrent cache writer at %s", lockPath)
+			return fmt.Errorf("timed out waiting for concurrent cache writer at %s: %w", lockPath, err)
 		}
 		time.Sleep(lockPoll)
 	}
