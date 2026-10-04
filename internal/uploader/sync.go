@@ -168,11 +168,26 @@ func executeSync(ctx context.Context, cfg *config.Config, sess *session, p plan,
 			}
 		}
 		stats.FilesDeleted += len(preDeleted)
-		recovery := func() {
+		// The two failure points below need different manifests. A failed file
+		// removal leaves the server exactly matching old minus the entries
+		// that did go, so the manifest drops those, like every other
+		// failure path. A failed directory removal does not: the colliding
+		// files are gone but the directory they emptied is still in the way,
+		// and dropping the entries here is what strands the retry -- with no
+		// stale child left in the manifest, the next run sees no collision,
+		// never re-prunes the leftover directory, and fails the upload on it
+		// every run. The colliding entries stay in the manifest instead: the
+		// retry's pre-pass counts an already-gone file as deleted, re-enters
+		// clearCollideParents, and removes the directory that stayed behind
+		// (review of #297).
+		recoveryFilesGone := func() {
 			writeRecoveryManifest(ctx, cfg, sess, watch, base, mergedManifest(old, upload, make([]bool, len(upload)), preDeleted), log)
 		}
+		recoveryCollisionLive := func() {
+			writeRecoveryManifest(ctx, cfg, sess, watch, base, mergedManifest(old, upload, make([]bool, len(upload)), nil), log)
+		}
 		if cerr != nil {
-			recovery()
+			recoveryFilesGone()
 			return fmt.Errorf("removing the manifest entries the upload must replace: %w", cerr)
 		}
 		// A collision under a path the plan turns into a file leaves the
@@ -183,7 +198,7 @@ func executeSync(ctx context.Context, cfg *config.Config, sess *session, p plan,
 		dirs, derr := clearCollideParents(ctx, cfg, sess, watch, base, colliding, p.files, budget)
 		stats.DirsDeleted += dirs
 		if derr != nil {
-			recovery()
+			recoveryCollisionLive()
 			return derr
 		}
 	}
@@ -313,9 +328,19 @@ func collidingDeletes(toDelete []string, plan []fileItem) (colliding, rest []str
 // still holds entries this deployment does not own, which sync refuses to
 // delete on purpose; that one fails with the reason instead of the bare
 // "is a directory" the rename would answer (issue #280). It returns how many
-// directories it removed. Only directories that are ancestors of a
-// colliding entry and also planned file paths are considered, deepest
-// first, so an emptied tree goes in one pass.
+// directories it removed.
+//
+// Only a directory-to-file transition has directories to remove, and only
+// the chain between the planned file and the colliding entries below it:
+// the planned file path and every directory under it are what the type
+// change takes out, and the manifest never lists the ones between (it
+// tracks files, not directories), so a deeper tree like about/sub/page.html
+// under the planned file "about" leaves about/sub behind unless it is
+// pruned too. A file-to-directory transition has no planned file above the
+// colliding entry: its parent keeps its other entries (a retained sibling
+// must survive, review of #297), and the pre-deleted colliding file is all
+// the change needs. The removal below goes deepest first, so an emptied
+// tree goes in one pass.
 func clearCollideParents(ctx context.Context, cfg *config.Config, sess *session, watch *stallWatchdog, base string, colliding []string, plan []fileItem, budget *deleteBudget) (int, error) {
 	plannedFile := make(map[string]bool, len(plan))
 	for _, f := range plan {
@@ -324,20 +349,30 @@ func clearCollideParents(ctx context.Context, cfg *config.Config, sess *session,
 	var dirs []string
 	seen := map[string]bool{}
 	for _, rel := range colliding {
-		// Every ancestor up to and including the planned file path is a
-		// directory the type change takes out, and the manifest never
-		// lists the ones between (it tracks files, not directories): a
-		// deeper tree like about/sub/page.html under the planned file
-		// "about" leaves about/sub behind unless it is pruned too. The
-		// deepest-first removal below empties them one level at a time;
-		// ancestors above the planned file path are not this change.
+		// The top of this collision is the nearest planned file above the
+		// colliding entry. Everything from the entry's parent up to that
+		// file path is a directory the type change removes; nothing above
+		// it is. Collecting ancestors before proving one is a planned file
+		// is what made a file-to-directory transition try to empty its own
+		// parent -- a parent that keeps the retained siblings the plan
+		// never asked to remove (review of #297).
+		top := ""
+		for dir := path.Dir(rel); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
+			if plannedFile[dir] {
+				top = dir
+				break
+			}
+		}
+		if top == "" {
+			continue // a file-to-directory transition: no directory to remove
+		}
 		for dir := path.Dir(rel); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
 			if seen[dir] {
 				break
 			}
 			seen[dir] = true
 			dirs = append(dirs, dir)
-			if plannedFile[dir] {
+			if dir == top {
 				break // the planned file path is the top of this collision
 			}
 		}

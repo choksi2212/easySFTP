@@ -277,3 +277,123 @@ func TestSyncPrepassDoesNotTouchDisjointStaleFiles(t *testing.T) {
 		t.Error("the new page must be on the server")
 	}
 }
+
+// TestSyncFileToDirectoryKeepsRetainedSiblings pins the narrowness the parent
+// prune must have (review of #297): a file-to-directory transition replaces
+// one manifest entry and has no planned file above it, so no directory is
+// removed. The old parent walk collected "docs" anyway, saw the retained
+// keep.html in its ReadDir, and aborted a valid deploy with the
+// unmanaged-entries error -- a file the plan never asked to remove.
+func TestSyncFileToDirectoryKeepsRetainedSiblings(t *testing.T) {
+	srv := startTestServer(t)
+	fileVersion := t.TempDir()
+	writeTree(t, fileVersion, map[string]string{"index.html": "home", "docs/about": "about page", "docs/keep.html": "kept"})
+	dirVersion := t.TempDir()
+	writeTree(t, dirVersion, map[string]string{"index.html": "home", "docs/about/index.html": "about page", "docs/keep.html": "kept"})
+
+	cfg := baseConfig(srv)
+	pair := config.UploadPair{Name: "site", Local: fileVersion, Remote: "/site", Strategy: config.StrategySync}
+	cfg.Uploads = []config.UploadPair{pair}
+	if _, err := Run(context.Background(), cfg, testLogger{t}); err != nil {
+		t.Fatal(err)
+	}
+
+	pair.Local = dirVersion
+	cfg.Uploads = []config.UploadPair{pair}
+	stats, err := Run(context.Background(), cfg, testLogger{t})
+	if err != nil {
+		t.Fatalf("the file-to-directory change under a retained sibling must deploy, got: %v", err)
+	}
+	if stats.FilesDeleted != 1 || stats.FilesUploaded != 1 {
+		t.Fatalf("run 2: deleted %d (want 1, the stale file), uploaded %d (want 1, the new page)", stats.FilesDeleted, stats.FilesUploaded)
+	}
+	if stats.DirsDeleted != 0 {
+		t.Errorf("run 2: a file-to-directory transition removes no directory, removed %d", stats.DirsDeleted)
+	}
+	if !remoteExists(t, srv, "/site/docs/about/index.html") {
+		t.Error("run 2: the new nested page must be on the server")
+	}
+	if !remoteExists(t, srv, "/site/docs/keep.html") {
+		t.Error("run 2: the retained sibling must survive the type change")
+	}
+
+	// The retry is a no-op: the manifest matches the tree.
+	stats, err = Run(context.Background(), cfg, testLogger{t})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.FilesUploaded != 0 || stats.FilesDeleted != 0 {
+		t.Errorf("run 3: a settled sync should change nothing, uploaded %d deleted %d", stats.FilesUploaded, stats.FilesDeleted)
+	}
+}
+
+// TestSyncRetriesAnInterruptedDirectoryToFileChange pins the recovery contract
+// (review of #297): when clearCollideParents fails after the colliding files
+// are already gone, the recovery manifest must keep those entries, so the
+// retry re-discovers the collision, re-enters the parent prune (the
+// already-gone file counts as deleted), removes the leftover directory, and
+// the type change completes. Dropping the pre-deleted entries stranded the
+// retry: no stale child meant no colliding entry, no prune, and the upload
+// failing on the leftover directory forever.
+func TestSyncRetriesAnInterruptedDirectoryToFileChange(t *testing.T) {
+	// The rmdir of /www/about fails once: the interrupted run's state is
+	// exactly what a server-side rmdir refusal or a crashed run leaves.
+	fault := &faultyPathCmd{method: "Rmdir", path: "/www/about"}
+	srv := startTestServer(t, withFaultyPath(fault))
+
+	dirVersion := t.TempDir()
+	writeTree(t, dirVersion, map[string]string{"index.html": "home", "about/index.html": "about page"})
+	fileVersion := t.TempDir()
+	writeTree(t, fileVersion, map[string]string{"index.html": "home", "about": "now a file"})
+
+	cfg := syncConfig(srv, dirVersion)
+	if _, err := Run(context.Background(), cfg, testLogger{t}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The type-change run fails at the injected rmdir, after the colliding
+	// page was already deleted.
+	fault.enabled.Store(true)
+	cfg = syncConfig(srv, fileVersion)
+	_, runErr := Run(context.Background(), cfg, testLogger{t})
+	if runErr == nil {
+		t.Fatal("the run must fail while the rmdir is injected to fail")
+	}
+	if !strings.Contains(runErr.Error(), "removing remote directory") {
+		t.Errorf("the error must be the directory removal, got: %v", runErr)
+	}
+	// The emptied directory is still in the way, and the manifest must still
+	// know about the colliding entry, or the retry below has nothing to
+	// re-discover.
+	if !remoteExists(t, srv, "/www/about") {
+		t.Fatal("the directory the failed rmdir left behind must still be there")
+	}
+	m := readRemoteManifest(t, srv)
+	if _, ok := m.Files["about/index.html"]; !ok {
+		t.Fatalf("the recovery manifest must retain the pre-deleted colliding entry for the retry to re-discover, got files %v", m.Files)
+	}
+
+	// The retry: same config, no injected failure. The retained entry
+	// re-enters the pre-pass (already-gone counts as deleted), the prune
+	// removes the leftover directory, and the change completes.
+	fault.enabled.Store(false)
+	stats, err := Run(context.Background(), cfg, testLogger{t})
+	if err != nil {
+		t.Fatalf("the retry must complete the interrupted type change, got: %v", err)
+	}
+	if stats.DirsDeleted != 1 {
+		t.Errorf("the retry must remove the leftover directory, removed %d", stats.DirsDeleted)
+	}
+	if got := readRemote(t, srv, "/www/about"); got != "now a file" {
+		t.Errorf("the replacement file must be on the server, got %q", got)
+	}
+
+	// Settled: the manifest matches the tree.
+	stats, err = Run(context.Background(), cfg, testLogger{t})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.FilesUploaded != 0 || stats.FilesDeleted != 0 {
+		t.Errorf("run 4: a settled sync should change nothing, uploaded %d deleted %d", stats.FilesUploaded, stats.FilesDeleted)
+	}
+}
