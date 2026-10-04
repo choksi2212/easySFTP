@@ -410,9 +410,11 @@ Inside `internal/benchmark`:
   `link` parses profiles and drives `tc` and `cmd/linkprobe`, `driver` is the
   two measuring loops, and `store` is the result directory.
 - `driver`'s own tests re-execute the test binary as a stub easySFTP build and
-  assert on what comes out; `store`'s tests cover the result directory. Since
-  step 6 these are the only self-checks the harness has, so a behaviour worth
-  keeping belongs in one of them.
+  assert on what comes out; `store`'s tests cover the result directory. `report`'s
+  tests pin the renderer against the committed corpus and a full-branch fixture,
+  `cmd/easysftp-bench`'s pin its environment parsing, and `link`'s pin the
+  profile grammar and the probe document wrapping. A behaviour worth keeping
+  belongs in one of these self-checks.
 
 A scenario carries a *shape* as well as a payload (`scenario.ShapeOf`: mode,
 whether the measured run redeploys over an unmeasured one, flat or deep
