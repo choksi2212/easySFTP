@@ -367,6 +367,19 @@ Three things to know when reading it:
   is slow" from "easySFTP is slow", not `pkg/sftp` from the line. When a
   scenario's own MiB/s sits at the single-stream control, the run was network
   bound and a code delta on it says nothing.
+- **Stored results before the pipelining fix are pre-pipelining.** Until
+  issue #276 was fixed, every upload - and the control's own write - sent one
+  32 KiB packet per round-trip: `request_concurrency` reached the SFTP client
+  but the write loop never used it, and the single-stream control and the
+  scenarios measured the same stop-and-wait mechanism. A stored
+  single-stream control close to a `single` cell therefore does not show that
+  the run was network bound; it shows that both moved one packet per
+  round-trip. The fix pipelines both (the uploader via
+  `ReadFromWithConcurrency`, the control the same way), so from it on, that
+  comparison means what this section says it means. Expect
+  `assumedStreamBytesPerSecond`, `uploadsInFlightPerConnection` and the regret
+  replay to need refitting once a post-fix sweep exists; the ones fitted to
+  stop-and-wait rates describe a mechanism the uploader no longer uses.
 - **Each profile is probed twice**, before and after its own measured runs. A
   start and an end probe of the *same* profile are comparable, and that is what
   makes drift over a multi-hour sweep visible. Two probes of different profiles

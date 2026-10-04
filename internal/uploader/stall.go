@@ -90,11 +90,17 @@ func (w *stallWatchdog) monitor() {
 	}
 }
 
-// writeProgress wraps the source with a one-read lag. uploadFile deliberately
-// passes a reader without Size/Len/Stat to pkg/sftp, which keeps its ReadFrom
-// loop sequential: it asks for the next packet only after the previous remote
-// write completed. Ticking before that next read therefore records server-side
-// progress, while ticking on the first local read would not.
+// writeProgress wraps the source with a one-read lag. pkg/sftp's write path
+// hands each 32 KiB packet to a worker over an unbuffered channel, and a
+// worker takes the next packet only after the acknowledgement of the one it
+// is holding, so a read of packet m can happen at most once packet m-C-1 has
+// been acknowledged (C = the pipeline depth): after the first window, reads
+// are gated on acknowledgements, with a lead of at most C+1 packets. Ticking
+// on those reads therefore still records server-side progress, never just
+// local disk speed: a stalled server stops the reads one window later than
+// it stopped the acks, and the watchdog fires one window later than it would
+// have in the sequential era (issue #276 is the era change). The tick still
+// means "the server acknowledged work", not "the local disk produced bytes".
 func (w *stallWatchdog) writeProgress(r io.Reader) io.Reader {
 	return &writeProgressReader{w: w, r: r}
 }

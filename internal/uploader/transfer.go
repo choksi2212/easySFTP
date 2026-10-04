@@ -63,6 +63,29 @@ type transferEnv struct {
 	// there is nothing to tune (every setting pinned, or a dry run), and
 	// every method on it tolerates that.
 	progress *uploadProgress
+	// requests is the resolved advanced.request_concurrency for this run:
+	// how deep one file's write pipeline runs (transferEnv.requestConcurrency).
+	requests int
+}
+
+// requestConcurrency returns the pipeline depth to use for one file's write
+// path, never below one. The client was created with this same ceiling (see
+// connect), so a larger value here would be capped by pkg/sftp anyway.
+func (env *transferEnv) requestConcurrency() int {
+	if env == nil || env.requests < 1 {
+		return 1
+	}
+	return env.requests
+}
+
+// pipelineDepth is what uploadFiles reads off the session: the resolved
+// request_concurrency when a tuning exists, one (sequential, the
+// pre-#276 behaviour) for a session built without one.
+func (s *session) pipelineDepth() int {
+	if s == nil || s.tune == nil {
+		return 1
+	}
+	return s.tune.requestConcurrency()
 }
 
 // uploadFiles creates the needed remote directories and uploads files in
@@ -120,7 +143,7 @@ func uploadFiles(ctx context.Context, cfg *config.Config, sess *session, files, 
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(settings.Concurrency)
 	results := make([]int64, len(files))
-	env := &transferEnv{cfg: cfg, sess: sess, watch: watch, log: log}
+	env := &transferEnv{cfg: cfg, sess: sess, watch: watch, log: log, requests: sess.pipelineDepth()}
 	if sess.tune.adaptive() && !cfg.DryRun && len(files) > 0 {
 		// Stage 3. A dry run moves no bytes, so there is nothing to measure
 		// and nothing a wider pool could carry.
@@ -252,7 +275,15 @@ func uploadFile(ctx context.Context, env *transferEnv, f fileItem, index int, mo
 		reader = watch.writeProgress(reader)
 	}
 	doneWrite := metrics.Op("sftp_write")
-	n, err := io.Copy(dst, reader)
+	// Pipelining goes through ReadFromWithConcurrency rather than ReadFrom
+	// (which io.Copy would pick): the reader is wrapped in ctxReader and
+	// writeProgressReader, none of which expose Len/Size/Stat, so ReadFrom
+	// cannot learn the remaining size and falls back to its sequential loop:
+	// one 32 KiB packet per round-trip, request_concurrency unused (issue
+	// #276). ReadFromWithConcurrency takes the depth from the setting
+	// instead of the reader's type, capping it at the client's own
+	// max-concurrent-requests ceiling (connect).
+	n, err := dst.ReadFromWithConcurrency(reader, env.requestConcurrency())
 	if cerr := dst.Close(); err == nil {
 		err = cerr
 	}

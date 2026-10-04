@@ -163,8 +163,15 @@ func writeStream(ctx context.Context, c *conn, cfg Config, block []byte, index i
 		_ = c.sftp.Remove(name)
 	}()
 
+	// The write is pipelined at the same depth the uploader uses (the client
+	// is configured with MaxConcurrentRequestsPerFile(64) a dial earlier),
+	// so the control measures the line the way a post-#276 run drives it.
+	// blockReader exposes none of Len/Size/Stat, so plain ReadFrom would
+	// silently degrade to one 32 KiB packet per round-trip here too (issue
+	// #276) and the control would measure stop-and-wait while every scenario
+	// around it pipelines.
 	start := time.Now()
-	written, err := f.ReadFrom(&blockReader{block: block, remaining: n})
+	written, err := f.ReadFromWithConcurrency(&blockReader{block: block, remaining: n}, 64)
 	elapsed := time.Since(start)
 	if cerr := f.Close(); err == nil {
 		err = cerr

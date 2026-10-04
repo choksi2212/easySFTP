@@ -506,6 +506,16 @@ func planConcurrency(w Workload) int {
 // the file as far as it goes. That direction is the safe one. Under-pipelining
 // a long fat path costs throughput on every large file, while over-pipelining a
 // slow one costs buffers the budget below already bounds.
+//
+// Note that as of issue #276 the pipeline this sizes is real: uploads go
+// out through ReadFromWithConcurrency at exactly this depth. The BDP
+// branch itself is still unreachable in the current wiring - the
+// run-wide resolve happens before the first connection, when no
+// throughput has been measured yet, and a cached record is applied only
+// afterwards - so the conservative rule is also the live one. Refitting
+// this once post-#276 sweeps exist is issue #276's suggested direction
+// 3, not something this change does.
+
 func planRequestConcurrency(w Workload, l Link, concurrency int) int {
 	file := packetsFor(w.LargestUpload)
 	want := max(file, MinRequestConcurrency)
