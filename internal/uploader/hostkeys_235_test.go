@@ -39,17 +39,19 @@ func runWithHostKey(t *testing.T, srv *testServer, fps []string) error {
 	return err
 }
 
-// hostKeySetupError asserts a rejected shape fails before any connection is
-// attempted (the server counted zero accepts) and returns the error, so a
-// future refactor cannot silently turn a bad host-key line into a connect
-// attempt against the server.
+// hostKeySetupError asserts a rejected shape fails without attempting a
+// connection and returns the error, so a future refactor cannot silently
+// turn a bad host-key line into a connect attempt against the server. The
+// accept counter is cumulative across subtests sharing the server, so the
+// check is the delta around this run, not the absolute count.
 func hostKeySetupError(t *testing.T, srv *testServer, fps []string) error {
 	t.Helper()
+	before := atomic.LoadInt32(&srv.accepted)
 	err := runWithHostKey(t, srv, fps)
 	if err == nil {
 		t.Fatalf("expected host-key %q to be rejected", strings.Join(fps, "\n"))
 	}
-	if got := atomic.LoadInt32(&srv.accepted); got != 0 {
+	if got := atomic.LoadInt32(&srv.accepted) - before; got != 0 {
 		t.Fatalf("an invalid host-key line must fail before connecting; the server accepted %d connection(s)", got)
 	}
 	return err
