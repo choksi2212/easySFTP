@@ -158,3 +158,44 @@ func TestNonPushingJobsPersistNoCredentials(t *testing.T) {
 		checkoutsNeverPersist(t, loadWorkflow(t, tc.file), tc.file, tc.job)
 	}
 }
+
+// TestStoreJobsCheckOutBeforeDownloading: both hosted store jobs download
+// the measurement artifact into the workspace and then copy it into the
+// checkout. The pinned actions/checkout removes the non-repository contents
+// of a workspace that has no .git directory (prepareExistingDirectory), so a
+// download that runs before the first root checkout is deleted by the
+// checkout itself and the copy step finds nothing: the run measures, then
+// fails to store. The checkout must come first in both workflow variants;
+// fixing benchmark.yml alone leaves every matrix run broken (review of
+// #300).
+func TestStoreJobsCheckOutBeforeDownloading(t *testing.T) {
+	for _, tc := range []struct{ file string }{
+		{"benchmark.yml"},
+		{"benchmark-matrix.yml"},
+	} {
+		wf := loadWorkflow(t, tc.file)
+		j, ok := wf.Jobs["store"]
+		if !ok {
+			t.Fatalf("%s has no store job; the measuring/storing split of issue #283 is gone", tc.file)
+		}
+		checkoutIdx, downloadIdx := -1, -1
+		for i, step := range j.Steps {
+			switch {
+			case strings.HasPrefix(step.Uses, "actions/checkout"):
+				if checkoutIdx == -1 {
+					checkoutIdx = i
+				}
+			case strings.HasPrefix(step.Uses, "actions/download-artifact"):
+				if downloadIdx == -1 {
+					downloadIdx = i
+				}
+			}
+		}
+		if checkoutIdx == -1 || downloadIdx == -1 {
+			t.Fatalf("%s: the store job must have both a checkout and an artifact download; got checkout=%d download=%d", tc.file, checkoutIdx, downloadIdx)
+		}
+		if checkoutIdx > downloadIdx {
+			t.Errorf("%s: the store job downloads the results artifact (step %d) before its first checkout (step %d); the pinned checkout removes non-repository contents of a .git-less workspace, so the downloaded results are deleted before the store step can read them (review of #300)", tc.file, downloadIdx, checkoutIdx)
+		}
+	}
+}
