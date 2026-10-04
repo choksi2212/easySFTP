@@ -35,8 +35,12 @@ func withFaultedLockCreate(t *testing.T, fault func(lockPath string, underlying 
 // TestDeniedLockCreateIsPolledNotFailed: the first create is denied the way a
 // delete-pending sidecar denies it on Windows, and the second attempt gets
 // the lock. The write must go through, proving the denial was polled rather
-// than returned.
+// than returned. Away from Windows the same denial is returned immediately,
+// which the fail-fast test below covers.
 func TestDeniedLockCreateIsPolledNotFailed(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows treats a denied create as busy; elsewhere it fails fast")
+	}
 	path := filepath.Join(t.TempDir(), "auto.json")
 	withLockTimings(t, time.Second, time.Millisecond)
 	calls := 0
