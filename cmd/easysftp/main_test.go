@@ -259,8 +259,11 @@ func TestReportStatsSingleNamedDeploymentGetsBreakdown(t *testing.T) {
 }
 
 // A deployment name or path containing a pipe or a backtick must not break the
-// job summary table: a pipe splits the row, a backtick inside the code span
-// ends it. Both are legal in the user's own configuration (issue #287).
+// job summary table: a pipe splits the row, a backtick inside a code span
+// ends it. Both are legal in the user's own configuration (issue #287), and the
+// summary must also keep showing the value the user configured: the paths
+// render as code spans whose delimiter grows past any backtick run, so the
+// characters on the page are the ones in the config (review of #298).
 func TestReportStatsEscapesBreaksTableCharacters(t *testing.T) {
 	summaryPath := filepath.Join(t.TempDir(), "summary")
 	t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "output"))
@@ -280,12 +283,54 @@ func TestReportStatsEscapesBreaksTableCharacters(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"| a\\|b | `./dist\\|x/` | `/www/'y'/` | overlay |",
+		"| a\\|b | `./dist\\|x/` | ``/www/`y`/`` | overlay |",
 		"| other | `./src/` | `/src/` | overlay |",
 	} {
 		if !strings.Contains(string(summary), want) {
 			t.Errorf("summary does not contain %q:\n%s", want, summary)
 		}
+	}
+}
+
+// TestReportStatsCodeSpansShowBacktickPathsVerbatim pins the property the
+// review of #298 asked for: a path with a backtick in it is displayed
+// unchanged, not substituted away. Each row must contain the path exactly as
+// the user wrote it, inside a code span whose fence is longer than any
+// backtick run in the value; a value that itself begins or ends with a
+// backtick gets Markdown's required space padding, which the renderer
+// strips from the display.
+func TestReportStatsCodeSpansShowBacktickPathsVerbatim(t *testing.T) {
+	summaryPath := filepath.Join(t.TempDir(), "summary")
+	t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "output"))
+	t.Setenv("GITHUB_STEP_SUMMARY", summaryPath)
+
+	mid := "./dist/release`2026/" // a backtick run in the middle of the value
+	edged := "`/srv/www/v1"       // the value itself starts with a backtick
+	stats := &uploader.Stats{
+		FilesUploaded: 2, BytesUploaded: 2048, Duration: time.Second,
+		Deployments: []uploader.DeploymentStats{
+			{Name: "site", Local: mid, Remote: "/www/", Strategy: "sync", FilesUploaded: 1, BytesUploaded: 1024},
+			{Name: "odd", Local: edged, Remote: "/www/", Strategy: "sync", FilesUploaded: 1, BytesUploaded: 1024},
+		},
+	}
+	reportStats(&config.Config{ConfigPath: "x.yml", KnownHosts: "line"}, stats, "uploaded", nil)
+
+	summary, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No padding is needed here: the two-backtick fence outlives the single
+	// backtick inside the value, so the path sits between the fences unchanged.
+	if want := "| site | ``" + mid + "`` | `/www/` | sync |"; !strings.Contains(string(summary), want) {
+		t.Errorf("summary must show the mid-backtick path verbatim:\n%s\nwant %s", summary, want)
+	}
+	// A value that starts or ends with a backtick needs the space padding; the
+	// value itself is still byte for byte between the fences.
+	if want := "| odd | `` " + edged + " `` | `/www/` | sync |"; !strings.Contains(string(summary), want) {
+		t.Errorf("summary must pad, not rewrite, a value that starts with a backtick:\n%s\nwant %s", summary, want)
+	}
+	if strings.Contains(string(summary), "release'2026") {
+		t.Errorf("summary rewrote the backtick in the path:\n%s", summary)
 	}
 }
 

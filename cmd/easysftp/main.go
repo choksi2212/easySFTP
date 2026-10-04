@@ -220,8 +220,8 @@ func deploymentBreakdown(deployments []uploader.DeploymentStats) string {
 		if name == "" {
 			name = "(inline)"
 		}
-		fmt.Fprintf(&b, "| %s | `%s` | `%s` | %s | %d | %d | %d | %d | %s | %s |\n",
-			mdEscape(name), mdEscape(d.Local), mdEscape(d.Remote), d.Strategy, d.FilesUploaded, d.FilesDeleted, d.DirsDeleted, d.FilesSkipped,
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | %d | %d | %d | %s | %s |\n",
+			mdTextCell(name), mdCodeCell(d.Local), mdCodeCell(d.Remote), d.Strategy, d.FilesUploaded, d.FilesDeleted, d.DirsDeleted, d.FilesSkipped,
 			uploader.HumanSize(d.BytesUploaded), d.Duration.Round(time.Millisecond))
 		totalUploaded += d.FilesUploaded
 		totalDeleted += d.FilesDeleted
@@ -236,11 +236,39 @@ func deploymentBreakdown(deployments []uploader.DeploymentStats) string {
 	return b.String()
 }
 
-// mdEscape keeps one deployment's own fields from breaking the summary table
-// (issue #287): a `|` in a name or path would split the row, and a backtick
-// inside a code span ends it. The values are the user's own configuration, but
-// a path with a pipe in it is legal, so escape both.
-func mdEscape(s string) string {
-	r := strings.NewReplacer("|", "\\|", "`", "'")
-	return r.Replace(s)
+// mdTextCell keeps a deployment name from breaking the summary table
+// (issue #287): a `|` in the user's own name would split the row.
+// The name is ordinary cell text, so escaping the separator is all it needs.
+func mdTextCell(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
+}
+
+// mdCodeCell renders s as a code span that shows the value verbatim. That
+// is the property the summary must keep (review of #298): a path is the
+// user's own configuration, and the table may not report a deployment as
+// going somewhere it did not. A code span displays its content unchanged,
+// but a literal backtick would end the span, so the delimiter grows to one
+// more backtick than the longest run in the value. When the value itself
+// starts or ends with a backtick, a space pads the span on both sides, and
+// Markdown strips that space from the display. The `|` escape is the
+// table's own rule and applies before inline parsing, even inside a
+// code span.
+func mdCodeCell(s string) string {
+	esc := strings.ReplaceAll(s, "|", "\\|")
+	longest, run := 0, 0
+	for _, r := range esc {
+		if r != '`' {
+			run = 0
+			continue
+		}
+		run++
+		if run > longest {
+			longest = run
+		}
+	}
+	delim := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(esc, "`") || strings.HasSuffix(esc, "`") {
+		return delim + " " + esc + " " + delim
+	}
+	return delim + esc + delim
 }
