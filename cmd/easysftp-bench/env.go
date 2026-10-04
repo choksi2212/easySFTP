@@ -71,12 +71,17 @@ func envAxis(name, fallback string) ([]int, string, error) {
 // "default" for "set nothing and let easySFTP pick". That keeps a
 // two-dimensional grid expressible now that the axis has a real default, and it
 // is stored as a null coordinate.
+//
+// The display string is the value that was asked for, which is the fallback
+// when the variable is unset: the axis sweeps the fallback, so a stored
+// settings table that claims "easySFTP default" while three passes ran is a
+// document that lies about its own inputs.
 func envRequestAxis(name, fallback string) ([]*int, string, error) {
-	raw := os.Getenv(name)
 	fields := strings.Fields(envOr(name, fallback))
 	if len(fields) == 0 {
 		fields = []string{"default"}
 	}
+	raw := strings.Join(fields, " ")
 	out := make([]*int, 0, len(fields))
 	for _, field := range fields {
 		if field == "default" {
