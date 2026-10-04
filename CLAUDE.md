@@ -37,11 +37,17 @@ Guiding principles for changes here:
   the `Upload via SFTP` step, parsing/validation in `internal/config/config.go`,
   a row in `docs/configuration.md`, and (if it's a real behavior change) a
   test. Don't forget `action.yml` input descriptions are user-facing docs too.
-  Two drift-check lists must also be extended, or tests fail: `wantInputs` in
-  `internal/actionmeta/actionmeta_test.go` (the actionmeta test errors on any
-  wired env var missing from it), and the cleared-env list in `setBaseEnv`
+  Three drift-check lists must also be extended, or tests fail: `wantInputs`
+  in `internal/actionmeta/actionmeta_test.go` (the actionmeta test errors on
+  any wired env var missing from it), the cleared-env list in `setBaseEnv`
   (`internal/config/config_test.go`), which keeps config tests hermetic when
-  the ambient environment sets `EASYSFTP_*` variables.
+  the ambient environment sets `EASYSFTP_*` variables, and the config-file
+  key set: any key added to or removed from the yaml structs in
+  `internal/config/configfile.go` must appear in `allowedKeys` there and in
+  `schema/easysftp.schema.json`, or the schema-parity tests in
+  `internal/config/schema_parity_test.go` fail (they also load
+  `docs/easysftp.example.yml` through the real parser, so the copy-paste
+  example is a tested artifact).
 
 ## Where a setting lives (v3)
 
