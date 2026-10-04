@@ -14,13 +14,109 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
+// parseHostKeyFingerprint extracts the SHA256 fingerprint from one host-key
+// line. A bare 'SHA256:...' fingerprint is returned unchanged. A line with
+// whitespace-separated fields, which is what 'ssh-keygen -lf' prints for a
+// server, a known_hosts file or a public key file (and therefore what the
+// quick start tells users to store), keeps only the field that starts with
+// SHA256:, so pasting the documented command's output verbatim works
+// (issue #235). A line carrying a second SHA256-like field is refused: two
+// fingerprints on one line used to be one bad pin (the whole line never
+// matched), and silently accepting just the first would hide the second.
+// A known_hosts or public-key line that carries no SHA256 fingerprint is
+// redirected to the right input; an MD5 fingerprint line is rejected with
+// the re-run command that produces the SHA256 form; anything else keeps the
+// error of the strict parser that was here before.
+func parseHostKeyFingerprint(line string, names hopNames) (string, error) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("%s must be a SHA256 fingerprint like 'SHA256:...', got %q", names.hostKey, line)
+	}
+	found := ""
+	for _, f := range fields {
+		if strings.HasPrefix(f, "SHA256:") {
+			if found != "" {
+				return "", fmt.Errorf("%s takes one fingerprint per line; %q carries two 'SHA256:...' fields. Pin each fingerprint on its own line",
+					names.hostKey, line)
+			}
+			found = f
+		}
+	}
+	if found != "" {
+		return found, nil
+	}
+	if isMD5Fingerprint(fields) {
+		return "", fmt.Errorf("%s must be a SHA256 fingerprint like 'SHA256:...', got %q. MD5 fingerprints are not accepted; re-run with 'ssh-keygen -E sha256 -lf' to get the SHA256 form",
+			names.hostKey, line)
+	}
+	// The order below is positional: a known_hosts line carries its key type
+	// as the second field ('host ssh-ed25519 AAAA...'), a public key line as
+	// the first ('ssh-ed25519 AAAA...'), so a server named 'ssh-gw...' is
+	// still recognized as the host field of a known_hosts line.
+	if isKnownHostsLine(fields) {
+		return "", fmt.Errorf("%s must be a SHA256 fingerprint like 'SHA256:...', got %q. That looks like a known_hosts line; use %s instead",
+			names.hostKey, line, names.knownHosts)
+	}
+	if isPublicKeyLine(fields) {
+		return "", fmt.Errorf("%s must be a SHA256 fingerprint like 'SHA256:...', got %q. That looks like a public key line; convert it first with 'ssh-keygen -lf <file>' and store the SHA256 field, or use %s with a known_hosts line",
+			names.hostKey, line, names.knownHosts)
+	}
+	return "", fmt.Errorf("%s must be a SHA256 fingerprint like 'SHA256:...', got %q", names.hostKey, line)
+}
+
+// isKnownHostsLine reports whether the line's fields look like a known_hosts
+// entry: a hashed host pattern, a key-type marker, or a base64 key blob,
+// shapes a user pastes when they meant known-hosts but used host-key.
+// Fingerprint-carrying lines never reach this check (the scan above already
+// accepted them), so matching on structure alone is safe.
+func isKnownHostsLine(fields []string) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	// Hashed ('|1|...') and plain host patterns, and the marker lines
+	// OpenSSH writes (@cert-authority, @revoked).
+	if strings.HasPrefix(fields[0], "|1|") || strings.HasPrefix(fields[0], "@") {
+		return true
+	}
+	// A key type as the second field: 'host ssh-ed25519 AAAA...'. Both
+	// ssh-keyscan output and a known_hosts entry put it right after the host
+	// field, which is what separates them from an authorized_keys/public-key
+	// line, where the key type comes first (handled above).
+	if len(fields) > 1 && (strings.HasPrefix(fields[1], "ssh-") || strings.HasPrefix(fields[1], "ecdsa-") ||
+		strings.HasPrefix(fields[1], "sk-")) {
+		return true
+	}
+	return false
+}
+
+// isPublicKeyLine reports whether the line is an authorized_keys/public-key
+// entry: the key type first, the base64 key blob second. A known_hosts line
+// was already excluded above, and no fingerprint field was found, so a key
+// type in the first position can only be the public-key shape.
+func isPublicKeyLine(fields []string) bool {
+	return strings.HasPrefix(fields[0], "ssh-") || strings.HasPrefix(fields[0], "ecdsa-") ||
+		strings.HasPrefix(fields[0], "sk-")
+}
+
+// isMD5Fingerprint reports whether the line is what 'ssh-keygen -E md5 -lf'
+// prints ('256 MD5:xx:xx:... host (type)'), the other thing users have at
+// hand when the SHA256 form is rejected.
+func isMD5Fingerprint(fields []string) bool {
+	for _, f := range fields {
+		if strings.HasPrefix(f, "MD5:") {
+			return true
+		}
+	}
+	return false
+}
+
 // hostKeyCallback builds the host key verifier for one hop. It also returns
 // the host key algorithms that can be derived from the hop's known-hosts
 // lines, for the caller to use when the user did not configure any (see
 // pinnedHostKeyAlgorithms); the returned list is nil whenever there is
 // nothing to derive.
 func hostKeyCallback(h hop, log Logger) (ssh.HostKeyCallback, []string, error) {
-	want := h.fingerprints
+	want := slices.Clone(h.fingerprints)
 	if len(want) == 0 && h.knownHosts == "" {
 		// Unverified connections are an explicit opt-in in v3, per hop: a
 		// pinned target behind an unpinned jump host (or vice versa) still
@@ -36,10 +132,17 @@ func hostKeyCallback(h hop, log Logger) (ssh.HostKeyCallback, []string, error) {
 			h.names.allowAny, h.addr, h.names.hostKey, h.names.knownHosts)
 		return ssh.InsecureIgnoreHostKey(), nil, nil
 	}
-	for _, fp := range want {
-		if !strings.HasPrefix(fp, "SHA256:") {
-			return nil, nil, fmt.Errorf("%s must be a SHA256 fingerprint like 'SHA256:...', got %q", h.names.hostKey, fp)
+	// Every line must carry a SHA256 fingerprint. Bare fingerprints stay
+	// as they are; a line shaped like the output of 'ssh-keygen -lf'
+	// (or a whole known_hosts line pasted by mistake) keeps only the
+	// SHA256:... field, because the quick start tells users to paste
+	// exactly that command's output (issue #235).
+	for i, fp := range want {
+		parsed, err := parseHostKeyFingerprint(fp, h.names)
+		if err != nil {
+			return nil, nil, err
 		}
+		want[i] = parsed
 	}
 	var khCallback ssh.HostKeyCallback
 	if h.knownHosts != "" {

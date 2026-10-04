@@ -138,12 +138,22 @@ true`. In the config file the fields are `connection.host_key`,
 
 ### `host-key must be a SHA256 fingerprint like 'SHA256:...'`
 
-Pass the fingerprint (`SHA256:nThbg...`), not the raw `ssh-keyscan` line and
-not an MD5 fingerprint. Get the right format with:
+The input reads one fingerprint per line. The output of
+`ssh-keyscan <server> | ssh-keygen -lf -` works as-is (each of its lines is
+`256 SHA256:... <host> (TYPE)` and only the fingerprint is read); so does a
+bare `SHA256:...`. If you see this error anyway, the line is neither of
+those:
 
-```console
-ssh-keyscan sftp.example.com | ssh-keygen -lf -
-```
+- `That looks like a known_hosts line; use known-hosts instead`: you pasted
+  raw `ssh-keyscan` output. Either move it to the `known-hosts` input, which
+  takes it verbatim, or convert it first:
+- `That looks like a public key line; convert it first`: you pasted an
+  authorized_keys/public key. Run `ssh-keygen -lf <keyfile>` on it and store
+  the `SHA256:...` field.
+- `MD5 fingerprints are not accepted`: you ran `ssh-keygen -E md5`. Re-run
+  with `ssh-keygen -E sha256 -lf` to get the SHA256 form.
+- `takes one fingerprint per line`: two fingerprints ended up on one line.
+  Store each `SHA256:...` on its own line.
 
 ## Upload problems
 
