@@ -25,12 +25,12 @@ import (
 type pipeliningProbe struct {
 	inner sftp.Handlers
 
-	mu        sync.Mutex
-	maxInFlig int   // largest number of simultaneous WriteAt calls seen
-	inFlight  int   // WriteAt calls currently running
-	calls     int   // total WriteAt calls seen
-	bytes     int64 // total bytes handed to WriteAt
-	delay     time.Duration
+	mu          sync.Mutex
+	maxInFlight int   // largest number of simultaneous WriteAt calls seen
+	inFlight    int   // WriteAt calls currently running
+	calls       int   // total WriteAt calls seen
+	bytes       int64 // total bytes handed to WriteAt
+	delay       time.Duration
 }
 
 // Filewrite is FileWriter.Filewrite: return a WriterAt that counts overlap.
@@ -70,8 +70,8 @@ func (w *countingWriterAt) WriteAt(p []byte, off int64) (int, error) {
 	pr.mu.Lock()
 	pr.calls++
 	pr.inFlight++
-	if pr.inFlight > pr.maxInFlig {
-		pr.maxInFlig = pr.inFlight
+	if pr.inFlight > pr.maxInFlight {
+		pr.maxInFlight = pr.inFlight
 	}
 	pr.mu.Unlock()
 
@@ -130,7 +130,7 @@ func TestUploadPipelinesWritesPerFile(t *testing.T) {
 	}
 
 	pr.mu.Lock()
-	maxInFlight, calls, bytes := pr.maxInFlig, pr.calls, pr.bytes
+	maxInFlightht, calls, bytes := pr.maxInFlight, pr.calls, pr.bytes
 	pr.mu.Unlock()
 	// The reader's one-packet lead means even depth 1 can show two
 	// simultaneous server-side writes (see the depth-one test below), so
@@ -138,8 +138,8 @@ func TestUploadPipelinesWritesPerFile(t *testing.T) {
 	// anything past the lead is real pipelining. The in-process request
 	// server runs 8 workers, so a 64-deep pipeline against it tops out at
 	// 8 concurrent WriteAt calls.
-	if maxInFlight < 4 {
-		t.Fatalf("upload never pipelined: %d write(s) in flight at most (calls=%d, bytes=%d); request_concurrency=64 must put more than the one-packet lead in flight for a multi-packet file", maxInFlight, calls, bytes)
+	if maxInFlightht < 4 {
+		t.Fatalf("upload never pipelined: %d write(s) in flight at most (calls=%d, bytes=%d); request_concurrency=64 must put more than the one-packet lead in flight for a multi-packet file", maxInFlightht, calls, bytes)
 	}
 	if calls < 64 {
 		t.Fatalf("expected at least 64 write requests for a 2 MiB file, got %d", calls)
@@ -175,10 +175,10 @@ func TestUploadBoundedLeadWhenDepthOne(t *testing.T) {
 	}
 
 	pr.mu.Lock()
-	maxInFlight, calls := pr.maxInFlig, pr.calls
+	maxInFlightht, calls := pr.maxInFlight, pr.calls
 	pr.mu.Unlock()
-	if maxInFlight > 2 {
-		t.Fatalf("depth-1 upload had %d writes in flight at once; the single worker plus the reader lead bounds it at 2", maxInFlight)
+	if maxInFlightht > 2 {
+		t.Fatalf("depth-1 upload had %d writes in flight at once; the single worker plus the reader lead bounds it at 2", maxInFlightht)
 	}
 	if calls < 16 {
 		t.Fatalf("expected at least 16 write requests for a 512 KiB file, got %d", calls)

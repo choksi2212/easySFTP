@@ -84,7 +84,13 @@ import (
 // constant, refitting one against a new sweep or changing a clamp does not
 // need a bump: those change what the policy decides, not what a stored
 // measurement means.
-const PolicyVersion = 1
+//
+// The current generation is 2 because of the pipelining change (issue
+// #276): with uploads no longer stop-and-wait, a per-connection
+// throughput stored under generation 1 measures a different stream than
+// the same path produces now, and the records carrying it must refuse
+// themselves instead of planning pipelined runs from it.
+const PolicyVersion = 2
 
 // Hard bounds on what the policy may choose. A user who writes a number gets
 // that number; these only ever bound "auto".
@@ -515,7 +521,6 @@ func planConcurrency(w Workload) int {
 // afterwards - so the conservative rule is also the live one. Refitting
 // this once post-#276 sweeps exist is issue #276's suggested direction
 // 3, not something this change does.
-
 func planRequestConcurrency(w Workload, l Link, concurrency int) int {
 	file := packetsFor(w.LargestUpload)
 	want := max(file, MinRequestConcurrency)
