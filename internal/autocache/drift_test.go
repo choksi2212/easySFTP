@@ -108,7 +108,7 @@ func TestDriftLeavesTheBandInsteadOfDraggingItAlong(t *testing.T) {
 		}
 		naive.put(Record{
 			Target:        target,
-			PolicyVersion: 1,
+			PolicyVersion: autotune.PolicyVersion,
 			MeasuredAt:    now.Add(time.Duration(n) * time.Hour),
 			Workload:      w,
 			Link:          measuredLink(),
