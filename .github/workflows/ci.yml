@@ -186,7 +186,7 @@ jobs:
         id: hostkey
         run: |
           sleep 2
-          fps=$(ssh-keyscan -p 2222 localhost 2>/dev/null | ssh-keygen -lf - | awk '{print $2}')
+          fps=$(ssh-keyscan -p 2222 localhost 2>/dev/null | ssh-keygen -lf -)
           {
             echo 'fingerprints<<EOF'
             echo "$fps"

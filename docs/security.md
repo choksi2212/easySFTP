@@ -31,7 +31,10 @@ known-hosts: ${{ secrets.SFTP_KNOWN_HOSTS }}
 Hashed entries (`|1|...`) and `[host]:port` entries for non-standard ports
 (what `ssh-keyscan -p 2222` prints) work too.
 
-**Option B: `host-key`** takes SHA256 fingerprints, one per line:
+**Option B: `host-key`** takes SHA256 fingerprints, one per line. The
+output of the command above can be pasted as-is: each `SHA256:...` line
+carries other fields (`256 <fingerprint> <host> (ED25519)`), and only the
+fingerprint field is read from it:
 
 ```console
 $ ssh-keyscan sftp.example.com | ssh-keygen -lf -
