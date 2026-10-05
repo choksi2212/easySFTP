@@ -44,12 +44,17 @@ import (
 // the runtime controller to react to; what the controller adds is on top of
 // the numbers below, not in them.
 //
-// It also cannot score a coordinate the grid does not contain. scoreOf
-// interpolates between the measured cells that bracket the choice, so a choice
-// between two swept values is estimated from both rather than credited with
-// the better one; snapNote prints the span, and where that span is wide the
-// percentage next to it is an estimate and not a measurement of the policy
-// (issues #217 and #228).
+// A coordinate the grid does not contain is scored two ways, in this order.
+// When the workload cannot give a worker more than Items() items, every cell
+// at or above the chosen concurrency ran exactly the workers the choice
+// would, so their pooled durations are repeat measurements of the choice
+// rather than estimates of it (aliasCells, below); the v3.8.2 sync row is
+// the case that needed it. Otherwise scoreOf interpolates between the
+// measured cells that bracket the choice, so a choice between two swept
+// values is estimated from both rather than credited with the better one;
+// snapNote prints the span, and where that span is wide the percentage next
+// to it is an estimate and not a measurement of the policy (issues #217 and
+// #228).
 //
 // What it cannot see at all is a sweep's own recorded auto[] regret, which is
 // a measurement rather than a replay. TestRecordedAutoRegretOfStoredSweeps in
@@ -90,7 +95,7 @@ func TestPolicyRegretAgainstStoredSweeps(t *testing.T) {
 					t.Fatalf("%s: %v", group.scenario, err)
 				}
 				chosen := autotune.Plan(w, link, autotune.Fixed{})
-				at, ok := group.scoreOf(chosen)
+				at, ok := group.scoreOf(chosen, w)
 				if !ok {
 					// The policy picked coordinates this grid did not measure
 					// at all. Nothing to score, and silently dropping it would
@@ -105,7 +110,7 @@ func TestPolicyRegretAgainstStoredSweeps(t *testing.T) {
 				t.Logf("%-16s chose %d/%d/%s -> %s, best %d/%d/%s -> %s, regret %+.1f%%%s",
 					group.scenario, chosen.Connections, chosen.Concurrency, request(chosen.RequestConcurrency),
 					ms(at), best.Connections, best.Concurrency, requestOf(best.RequestConcurrency),
-					ms(best.MedianMS), regret*100, group.snapNote(chosen))
+					ms(best.MedianMS), regret*100, group.snapNote(chosen, w))
 
 				if regret > regretTarget && gap > trivialGap {
 					t.Errorf("%s: the policy is %.1f%% (%s) behind the fastest cell, over the %.0f%% target",
@@ -125,7 +130,11 @@ func TestTheFixedDefaultsWouldFailThisTest(t *testing.T) {
 	worst := 0.0
 	for _, sweep := range storedSweeps(t) {
 		for _, group := range sweep.groups() {
-			at, ok := group.scoreOf(old)
+			w, err := workloadOf(group.scenario)
+			if err != nil {
+				t.Fatalf("%s: %v", group.scenario, err)
+			}
+			at, ok := group.scoreOf(old, w)
 			if !ok {
 				continue
 			}
@@ -318,7 +327,10 @@ func (g cellGroup) best() schema.Cell {
 // Where a corner of the bracket was not measured, the weights of the corners
 // that were are renormalized, which is the same approximation one axis at a
 // time.
-func (g cellGroup) scoreOf(s autotune.Settings) (float64, bool) {
+func (g cellGroup) scoreOf(s autotune.Settings, w autotune.Workload) (float64, bool) {
+	if cells, ok := g.aliasCells(s, w); ok {
+		return medianOf(cells), true
+	}
 	corners := g.bracketCells(s)
 	if len(corners) == 0 {
 		return 0, false
@@ -332,6 +344,79 @@ func (g cellGroup) scoreOf(s autotune.Settings) (float64, bool) {
 		return 0, false
 	}
 	return sum / weight, true
+}
+
+// aliasCells is the measured answer to a choice the grid never ran. When the
+// deployment cannot give a worker more than Items() items, every cell whose
+// concurrency is at least the choice runs exactly the workers the choice
+// would: min(concurrency, Items()) collapses them all onto the same behaviour,
+// and their pooled durations are repeat measurements of the choice itself.
+//
+// The v3.8.2 sync row is what this exists for. The policy chose 1/3/16 for a
+// three-file sync; the grid has concurrency 2 and 4 around it, so the
+// interpolation scored the choice at 1,382 ms and failed the replay at
+// +29.9%. The five cells at concurrency 4 to 64 all ran the same three
+// workers and pool to a median of 1,172 ms (+10.2%, inside the target), which
+// also agrees with the sweep's own auto[] measurement of the same settings:
+// 1,166 ms, +9.6%. The interpolation was contradicting a measurement the
+// repository was already storing.
+//
+// Three conditions keep the alias from claiming more than that:
+//
+//   - The choice's concurrency is off the grid. A measured coordinate is
+//     scored at its own cell; only the unmeasured one needs a stand-in.
+//   - Items() is at most the chosen concurrency, which is the collapse
+//     itself. It is the policy-side workload count, never a cell's own
+//     files field: a redeploy cell reports the three files it transferred
+//     but its deployment has five hundred items of work, so clamping by
+//     the cell field would alias the redeploy row the same way.
+//   - The cells pooled sit at the choice's connection count and ran at
+//     its request depth (a cell records the request_concurrency it really
+//     used, so the grid pass that set nothing is still comparable), so
+//     what is pooled differs from the choice in the concurrency axis only.
+//
+// Cells below the choice are excluded on purpose: a cell at lower concurrency
+// ran genuinely fewer workers, so its durations measure a different decision.
+func (g cellGroup) aliasCells(s autotune.Settings, w autotune.Workload) ([]schema.Cell, bool) {
+	if s.Concurrency < 2 {
+		return nil, false
+	}
+	var measured []int
+	for _, c := range g.cells {
+		measured = append(measured, c.Concurrency)
+	}
+	if slices.Contains(measured, s.Concurrency) {
+		// A measured coordinate is scored at its own cell; only the
+		// unmeasured one needs a stand-in.
+		return nil, false
+	}
+	if w.Items() < 1 || w.Items() > s.Concurrency {
+		return nil, false
+	}
+	rcSet := s.RequestConcurrency
+	var cells []schema.Cell
+	for _, c := range g.cells {
+		if c.Connections != s.Connections || c.Concurrency < s.Concurrency {
+			continue
+		}
+		if c.RequestConcurrencyUsed == nil || int(*c.RequestConcurrencyUsed) != rcSet {
+			continue
+		}
+		cells = append(cells, c)
+	}
+	return cells, len(cells) > 0
+}
+
+// medianOf is the pooled median over every duration those cells recorded,
+// not a median of cell medians: a median of medians throws away the repeats
+// and lets one noisy cell decide the row.
+func medianOf(cells []schema.Cell) float64 {
+	var durations []float64
+	for _, c := range cells {
+		durations = append(durations, c.DurationsMS...)
+	}
+	sort.Float64s(durations)
+	return durations[len(durations)/2]
 }
 
 // corner is one measured cell of a bracket, with the weight interpolation
@@ -409,7 +494,16 @@ func bracket(values []int, want int) map[int]float64 {
 // the grid: how many measured cells bracket it and how far apart they are. A
 // reader has to be able to see that the number next to it is a bound rather
 // than a measurement of that coordinate.
-func (g cellGroup) snapNote(s autotune.Settings) string {
+func (g cellGroup) snapNote(s autotune.Settings, w autotune.Workload) string {
+	if cells, ok := g.aliasCells(s, w); ok {
+		lo, hi := cells[0].Concurrency, cells[0].Concurrency
+		for _, c := range cells[1:] {
+			lo = min(lo, c.Concurrency)
+			hi = max(hi, c.Concurrency)
+		}
+		return fmt.Sprintf("  [%d/%d/%s was not swept; %d measured cells at concurrency %d to %d all run the %d workers this workload has, pooled median %s]",
+			s.Connections, s.Concurrency, request(s.RequestConcurrency), len(cells), lo, hi, w.Items(), ms(medianOf(cells)))
+	}
 	corners := g.bracketCells(s)
 	if len(corners) < 2 {
 		return ""
