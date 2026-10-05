@@ -63,6 +63,29 @@ type transferEnv struct {
 	// there is nothing to tune (every setting pinned, or a dry run), and
 	// every method on it tolerates that.
 	progress *uploadProgress
+	// requests is the resolved advanced.request_concurrency for this run:
+	// how deep one file's write pipeline runs (transferEnv.requestConcurrency).
+	requests int
+}
+
+// requestConcurrency returns the pipeline depth to use for one file's write
+// path, never below one. The client was created with this same ceiling (see
+// connect), so a larger value here would be capped by pkg/sftp anyway.
+func (env *transferEnv) requestConcurrency() int {
+	if env == nil || env.requests < 1 {
+		return 1
+	}
+	return env.requests
+}
+
+// pipelineDepth is what uploadFiles reads off the session: the resolved
+// request_concurrency when a tuning exists, one (sequential, the
+// pre-#276 behaviour) for a session built without one.
+func (s *session) pipelineDepth() int {
+	if s == nil || s.tune == nil {
+		return 1
+	}
+	return s.tune.requestConcurrency()
 }
 
 // uploadFiles creates the needed remote directories and uploads files in
@@ -120,7 +143,7 @@ func uploadFiles(ctx context.Context, cfg *config.Config, sess *session, files, 
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(settings.Concurrency)
 	results := make([]int64, len(files))
-	env := &transferEnv{cfg: cfg, sess: sess, watch: watch, log: log}
+	env := &transferEnv{cfg: cfg, sess: sess, watch: watch, log: log, requests: sess.pipelineDepth()}
 	if sess.tune.adaptive() && !cfg.DryRun && len(files) > 0 {
 		// Stage 3. A dry run moves no bytes, so there is nothing to measure
 		// and nothing a wider pool could carry.
@@ -148,11 +171,11 @@ func uploadFiles(ctx context.Context, cfg *config.Config, sess *session, files, 
 			// The stat is read-only, so it also runs in dry-run mode: the
 			// preview then reports the same skips the real run would.
 			if skipUnchanged {
-				client, _, _ := sess.acquire(i)
-				done := metrics.Op("sftp_stat")
-				fi, err := client.Stat(f.remotePath)
-				done(err)
-				if err == nil && fi.Mode().IsRegular() && fi.Size() == f.size {
+				same, err := remoteSameSize(ctx, env, f, i)
+				if err != nil {
+					return err
+				}
+				if same {
 					if cfg.LogPerFile() {
 						log.Infof("%sskip %s (remote file has the same size)", verb, f.remotePath)
 					}
@@ -252,7 +275,15 @@ func uploadFile(ctx context.Context, env *transferEnv, f fileItem, index int, mo
 		reader = watch.writeProgress(reader)
 	}
 	doneWrite := metrics.Op("sftp_write")
-	n, err := io.Copy(dst, reader)
+	// Pipelining goes through ReadFromWithConcurrency rather than ReadFrom
+	// (which io.Copy would pick): the reader is wrapped in ctxReader and
+	// writeProgressReader, none of which expose Len/Size/Stat, so ReadFrom
+	// cannot learn the remaining size and falls back to its sequential loop:
+	// one 32 KiB packet per round-trip, request_concurrency unused (issue
+	// #276). ReadFromWithConcurrency takes the depth from the setting
+	// instead of the reader's type, capping it at the client's own
+	// max-concurrent-requests ceiling (connect).
+	n, err := dst.ReadFromWithConcurrency(reader, env.requestConcurrency())
 	if cerr := dst.Close(); err == nil {
 		err = cerr
 	}
@@ -420,8 +451,13 @@ func posixRenameUnsupported(err error, announced bool) bool {
 
 // cleanupTmp best-effort removes a leftover temp file, warning (but not
 // failing) if the server refuses, so an orphan is at least visible in the log.
+// A connection-class failure stays quiet on purpose: the retry path removes
+// that temp file itself on the fresh connection (retry.go), and a later run's
+// stale-temp sweep covers the case where there is no next attempt, so the
+// warning would only report a non-problem, once per in-flight worker, right
+// before the line that matters.
 func cleanupTmp(client *sftp.Client, tmpPath string, log Logger) {
-	if err := client.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := client.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) && !isConnError(err) {
 		log.Warningf("could not remove temporary file %s: %v", tmpPath, err)
 	}
 }
@@ -598,4 +634,48 @@ func (c *ctxReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return c.r.Read(p)
+}
+
+// remoteSameSize reports whether f's remote counterpart exists as a regular
+// file of the same size, the condition advanced.skip_unchanged skips on.
+//
+// The stat runs inside the watchdog's active window. Before issue #277 it sat
+// outside it, so a server that hangs on Stat (healthy enough to connect, dead
+// the moment a request lands on it) stalled the run without ever firing the
+// watchdog: no transfer had started, so there was nothing "active" to watch.
+// A connection-class failure is retried against a fresh connection like any
+// other, instead of being read as "the file changed", which uploaded files
+// that may not have changed, and reported them as "would upload" in a dry run.
+func remoteSameSize(ctx context.Context, env *transferEnv, f fileItem, index int) (bool, error) {
+	sess, watch := env.sess, env.watch
+	for {
+		client, c, gen := sess.acquire(index)
+		if watch != nil {
+			watch.begin()
+		}
+		done := metrics.Op("sftp_stat")
+		fi, err := client.Stat(f.remotePath)
+		done(err)
+		if watch != nil {
+			watch.end()
+		}
+		if err == nil {
+			return fi.Mode().IsRegular() && fi.Size() == f.size, nil
+		}
+		if !isConnError(err) {
+			// The normal case is "no such file" (nothing to skip); anything
+			// else the server says about the path is a reason to upload,
+			// same reading as before.
+			return false, nil
+		}
+		// A stat killed by the stall watchdog is not redialed: the server
+		// has already had its stall_timeout window, and redialing it would
+		// just stall again (mirrors uploadFileWithRetry).
+		if watch != nil && watch.fired.Load() {
+			return false, err
+		}
+		if _, rerr := sess.reconnect(ctx, c, gen, watch); rerr != nil {
+			return false, fmt.Errorf("stat %s: %w (%v)", f.remotePath, err, rerr)
+		}
+	}
 }

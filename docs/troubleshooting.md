@@ -64,7 +64,9 @@ The runner cannot reach the server.
   [changing IP ranges](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners#ip-addresses),
   so an IP allowlist usually requires a self-hosted runner or a relaxed rule.
 - Raise the timeout (`advanced.timeout` in the config file, default 30 s) if
-  the server is just slow to accept connections.
+  the server is just slow to accept connections. The timeout covers the whole
+  initial connection (TCP dial, SSH handshake, including through a jump host,
+  and SFTP session setup), so a stalled handshake fails within it too.
 
 ### A large deploy dies partway through with an EOF or "connection lost"
 
@@ -112,6 +114,12 @@ The server rejected the credentials.
 
 The server presented a key that matches none of your pinned fingerprints.
 
+- First check the key *type* named in the message. A server has one key of
+  each type and presents whichever the client asks for, so if you pinned
+  only one of its keys (say the Ed25519 one) and the message names another
+  type, the server presented a different key of the same server, not an
+  impostor: pin that one too, pin all of its keys, or use `known-hosts`,
+  which asks the server for exactly the key types you pinned.
 - If the server was migrated or its keys rotated, re-run
   `ssh-keyscan <server> | ssh-keygen -lf -` and update the secret.
 - If you did **not** expect a key change, stop and investigate. This is
@@ -130,12 +138,22 @@ true`. In the config file the fields are `connection.host_key`,
 
 ### `host-key must be a SHA256 fingerprint like 'SHA256:...'`
 
-Pass the fingerprint (`SHA256:nThbg...`), not the raw `ssh-keyscan` line and
-not an MD5 fingerprint. Get the right format with:
+The input reads one fingerprint per line. The output of
+`ssh-keyscan <server> | ssh-keygen -lf -` works as-is (each of its lines is
+`256 SHA256:... <host> (TYPE)` and only the fingerprint is read); so does a
+bare `SHA256:...`. If you see this error anyway, the line is neither of
+those:
 
-```console
-ssh-keyscan sftp.example.com | ssh-keygen -lf -
-```
+- `That looks like a known_hosts line; use known-hosts instead`: you pasted
+  raw `ssh-keyscan` output. Either move it to the `known-hosts` input, which
+  takes it verbatim, or convert it first:
+- `That looks like a public key line; convert it first`: you pasted an
+  authorized_keys/public key. Run `ssh-keygen -lf <keyfile>` on it and store
+  the `SHA256:...` field.
+- `MD5 fingerprints are not accepted`: you ran `ssh-keygen -E md5`. Re-run
+  with `ssh-keygen -E sha256 -lf` to get the SHA256 form.
+- `takes one fingerprint per line`: two fingerprints ended up on one line.
+  Store each `SHA256:...` on its own line.
 
 ## Upload problems
 
@@ -243,6 +261,12 @@ Symlinks, sockets and other non-regular files are skipped by design. SFTP
 uploads regular file content. If your build output contains symlinks (e.g.
 pnpm's `node_modules`), upload a bundled/dereferenced build instead.
 
+That applies to entries *inside* the source tree. A `source` that is itself
+a symlink to a directory (a nix `result`, a `bazel-bin`, or a Windows
+junction) is followed and the directory it points at is uploaded. A
+junction whose target cannot be resolved fails the run with an explicit
+error instead of reporting a green, empty deployment.
+
 When a deployment has any non-regular files, the log shows one aggregated
 warning per deployment (not one per file), e.g.:
 
@@ -268,6 +292,18 @@ hashes) the last sync uploaded. Leave it in place. Without it, the next sync
 re-uploads everything and deletes nothing. It is excluded from uploads and
 never deleted by `sync` itself.
 
+### `cannot turn the directory "<path>" into the file the plan uploads`
+
+A path that was a directory on the server is now a single file in your build,
+and the directory still holds files easySFTP did not upload. `sync` removed
+what it owned and then refused to remove the rest, because the manifest only
+ever lists files this deployment uploaded.
+
+Delete the remaining files on the server yourself, or run `mode: clean` once
+to take the whole directory out, then continue with `sync`. The bare
+`is a directory` from the rename is gone: this message names what is in the
+way and what to do.
+
 ### `refusing a destructive mode on remote root`
 
 `sync` and `clean` refuse a remote target that resolves to `/`, `.`, `~` or
@@ -292,6 +328,12 @@ Two things count towards the limit that its name does not spell out:
 each one on its own. A variant of the message that says "N more remote
 entries: M were already deleted earlier in this run" is the second case: an
 earlier deployment used part of the budget.
+
+A `sync` type change (a directory becoming a file) can also hit the limit
+after the files are gone: `refusing to remove the emptied directory
+"<path>"` names a directory the run must take out to let the upload through,
+which the earlier reservation could not count because its turn only came
+once the stale files inside it were deleted.
 
 ## Configuration errors
 
@@ -324,3 +366,13 @@ Convert your `version: 1` file following the
 
 `sync` and `clean` reconcile a directory tree; for single files use `overlay`
 (the default).
+
+### `deployments "<a>" and "<b>" both run 'mode: sync' into target "<t>"`
+
+Two deployments in `sync` mode share one target. The sync manifest is named
+by the run-wide `sync.manifest` setting and lives in the target, so both
+deployments read and write the same manifest and delete each other's files
+in a run that finishes green. To deploy several sources into one place,
+merge them into one directory in the build step and sync that, or give each
+deployment its own subdirectory of the target (both stay plain `sync`
+deployments). See [strategies](strategies.md#sync).

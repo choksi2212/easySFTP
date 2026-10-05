@@ -30,7 +30,8 @@ That's the whole thing. You only need to understand four things: where the
 server is, how to authenticate, what to upload, and where to put it.
 
 Get the host key once with `ssh-keyscan sftp.example.com | ssh-keygen -lf -`
-and store the `SHA256:...` line(s) as the `SFTP_HOST_KEY` secret. (Without it,
+and store its output as the `SFTP_HOST_KEY` secret; the `SHA256:...`
+fingerprint lines are read from it as-is, one per line. (Without it,
 the deploy fails rather than trusting an unverified server; you can opt out
 with `allow-any-host-key: true`, but that allows man-in-the-middle attacks.)
 

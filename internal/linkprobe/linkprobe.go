@@ -166,7 +166,8 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		SchemaVersion: schemaVersion,
 		Note: "measured with x/crypto/ssh and pkg/sftp, not with easySFTP's uploader: " +
 			"this separates the line from easySFTP, not pkg/sftp from the line. " +
-			"rtt is a sequential no-op round-trip; control writes the same total payload once over one connection and once over several",
+			"rtt is a sequential no-op round-trip; control writes the same total payload once over one connection and once over several, " +
+			"both pipelined at 64 concurrent requests per file like the uploader itself (issue #276)",
 		MeasuredAt: time.Now().UTC().Format(time.RFC3339),
 		Errors:     []string{},
 	}

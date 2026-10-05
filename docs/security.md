@@ -31,7 +31,10 @@ known-hosts: ${{ secrets.SFTP_KNOWN_HOSTS }}
 Hashed entries (`|1|...`) and `[host]:port` entries for non-standard ports
 (what `ssh-keyscan -p 2222` prints) work too.
 
-**Option B: `host-key`** takes SHA256 fingerprints, one per line:
+**Option B: `host-key`** takes SHA256 fingerprints, one per line. The
+output of the command above can be pasted as-is: each `SHA256:...` line
+carries other fields (`256 <fingerprint> <host> (ED25519)`), and only the
+fingerprint field is read from it:
 
 ```console
 $ ssh-keyscan sftp.example.com | ssh-keygen -lf -
@@ -45,8 +48,11 @@ host-key: ${{ secrets.SFTP_HOST_KEY }}
 ```
 
 Either way, the connection is accepted if the server presents a key matching
-**any** pinned entry (across both inputs, if you set both), so you can simply
-pin all of your server's keys. If the server's keys ever change unexpectedly,
+**any** pinned entry (across both inputs, if you set both). Pinning one key is
+enough: with `known-hosts` easySFTP asks the server for exactly the key types
+you pinned, so a server with several key types still presents the one you
+have. Pinning all of your server's keys is also safe, and saves you having to
+find out which one the server would pick. If the server's keys ever change unexpectedly,
 the deploy fails instead of talking to an impostor. When you migrate servers,
 update the secret with the new keys.
 
@@ -208,10 +214,15 @@ Apache (vhost or `.htaccess`):
   `.github/workflows/release-binaries.yml` and to the release commit. The
   launcher verifies it with `gh attestation verify` before running the binary,
   pinning both `--repo` and `--signer-workflow`, and **fails the run** if the
-  check runs and does not pass. When the action ref is a full commit SHA, the
-  launcher also pins `--source-digest` to that exact SHA. This prevents a
-  mutable release asset from being replaced with a validly attested binary
-  built by the same workflow from a different commit. You can run the same
+  check runs and does not pass. For every release ref, tag or full commit SHA
+  alike, the launcher resolves the exact release commit and also pins
+  `--source-digest` to it. This prevents a mutable release asset from being
+  replaced with a validly attested binary built by the same workflow from a
+  different commit: the rollback of shipping an older release's genuine binary
+  as the newest one fails the check, for tag-pinned users too. If the tag
+  cannot be resolved (a network hiccup, or a tag not yet visible to the
+  runner), the run warns and continues on the repository and workflow check
+  alone, so a resolution failure does not break a deploy. You can run the same
   check yourself:
 
   ```bash

@@ -379,15 +379,26 @@ func closeConn(c *conn) {
 	c.closeJump()
 }
 
-// openSlots counts the leading slots that already hold their own connection,
-// which is how many the server has actually granted. Must be called with s.mu
-// held.
+// openSlots counts how many distinct connections the leading touched slots
+// hold, which is how many the server has actually granted. A slot the server
+// refused is not left empty: acquire points it at the first connection so the
+// worker that asked for it still has a client (see noteDialFailure), and a
+// slot like that must not count as granted, or a run that asked for four and
+// was given two would remember the answer as four. eachConn skips the same
+// aliases for the same reason; this walk stops at the first untouched slot as
+// well, so a pool whose tail was never dialed counts only what it reached.
+// Must be called with s.mu held.
 func (s *session) openSlots() int {
+	seen := make(map[*conn]bool, len(s.conns))
 	n := 0
 	for _, c := range s.conns {
 		if c == nil {
 			break
 		}
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
 		n++
 	}
 	return max(n, 1)
@@ -441,12 +452,17 @@ func (quietLogger) Warningf(string, ...any) {}
 // the case the watchdog exists for (an unhealthy server) is exactly the case
 // where the redial it was waiting behind hangs. With advanced.timeout at 0,
 // documented as the no-timeout escape hatch, connect() has no deadline of its
-// own and the watchdog could be prevented from ever firing (issue #224).
+// own and the watchdog could be prevented from ever firing (issue #224); with
+// it positive, connect() is now itself bounded by it (issue #277), so the
+// in-flight window below is too.
 //
 // What is left is that a handshake already in flight is not interrupted; a
 // kill that lands during one is honored when it returns, by closing the fresh
-// connection instead of installing it.
-func (s *session) reconnect(ctx context.Context, c *conn, gen int) (*sftp.Client, error) {
+// connection instead of installing it (the fired check below). The one
+// exception is the recovery manifest: writeRecoveryManifest passes a nil
+// watchdog, because its redial is the documented post-kill connection that
+// records a failing run's partial progress (issue #115).
+func (s *session) reconnect(ctx context.Context, c *conn, gen int, watch *stallWatchdog) (*sftp.Client, error) {
 	for {
 		s.mu.Lock()
 		if c.gen != gen {
@@ -496,6 +512,17 @@ func (s *session) reconnect(ctx context.Context, c *conn, gen int) (*sftp.Client
 				return nil, err
 			}
 			return nil, fmt.Errorf("reconnecting: %w", err)
+		}
+		if watch != nil && watch.fired.Load() {
+			// The watchdog killed the run's connections while this handshake
+			// was in flight. Installing the fresh one would give the rest of
+			// the run a connection the spent watchdog no longer protects, and
+			// redialing a server that just stalled would only stall again, so
+			// close it and report the drop the callers already treat as fatal.
+			close(wait)
+			s.mu.Unlock()
+			closeConn(fresh)
+			return nil, errors.New("connection lost and the stall watchdog fired during the redial")
 		}
 		c.ssh, c.sftp, c.closeJump = fresh.ssh, fresh.sftp, fresh.closeJump
 		c.gen++
@@ -603,7 +630,7 @@ func (s *session) do(ctx context.Context, watch *stallWatchdog, op func(*sftp.Cl
 		if watch != nil && watch.fired.Load() {
 			return err
 		}
-		if _, rerr := s.reconnect(ctx, c, gen); rerr != nil {
+		if _, rerr := s.reconnect(ctx, c, gen, watch); rerr != nil {
 			return fmt.Errorf("%w (%v)", err, rerr)
 		}
 	}

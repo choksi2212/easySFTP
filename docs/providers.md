@@ -29,8 +29,8 @@ to trust; take it from a machine you already trust, once:
 ssh-keyscan -p 22 sftp.example.com | ssh-keygen -lf -
 ```
 
-Every `SHA256:...` line it prints can go into `host-key` (one per line, any
-match is accepted). If your provider publishes its fingerprints on a status or
+Every `SHA256:...` line it prints can go into `host-key` as-is (one per
+line, any match is accepted; the fingerprint field is read out of the line). If your provider publishes its fingerprints on a status or
 docs page, compare them; that is the strongest check you can make.
 
 **2. The remote path.** The path you need is the one *the SFTP session* sees,

@@ -45,8 +45,8 @@
 // safety. Nothing about that needs measuring.
 //
 // A connection is not free. Every one past the first costs a full SSH
-// handshake (dialed on first use, and dialed under the session lock, so the
-// cost lands in the run's critical path), and it buys a second TCP flow, a
+// handshake (dialed on first use, outside the session lock, so the worker
+// opening it waits for the handshake), and it buys a second TCP flow, a
 // second cipher stream and a second sftp-server process on the far side. With
 // perfect scaling a run that takes W on one connection takes
 //
@@ -84,7 +84,13 @@ import (
 // constant, refitting one against a new sweep or changing a clamp does not
 // need a bump: those change what the policy decides, not what a stored
 // measurement means.
-const PolicyVersion = 1
+//
+// The current generation is 2 because of the pipelining change (issue
+// #276): with uploads no longer stop-and-wait, a per-connection
+// throughput stored under generation 1 measures a different stream than
+// the same path produces now, and the records carrying it must refuse
+// themselves instead of planning pipelined runs from it.
+const PolicyVersion = 2
 
 // Hard bounds on what the policy may choose. A user who writes a number gets
 // that number; these only ever bound "auto".
@@ -506,6 +512,15 @@ func planConcurrency(w Workload) int {
 // the file as far as it goes. That direction is the safe one. Under-pipelining
 // a long fat path costs throughput on every large file, while over-pipelining a
 // slow one costs buffers the budget below already bounds.
+//
+// Note that as of issue #276 the pipeline this sizes is real: uploads go
+// out through ReadFromWithConcurrency at exactly this depth. The BDP
+// branch itself is still unreachable in the current wiring - the
+// run-wide resolve happens before the first connection, when no
+// throughput has been measured yet, and a cached record is applied only
+// afterwards - so the conservative rule is also the live one. Refitting
+// this once post-#276 sweeps exist is issue #276's suggested direction
+// 3, not something this change does.
 func planRequestConcurrency(w Workload, l Link, concurrency int) int {
 	file := packetsFor(w.LargestUpload)
 	want := max(file, MinRequestConcurrency)

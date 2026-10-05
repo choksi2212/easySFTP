@@ -37,11 +37,17 @@ Guiding principles for changes here:
   the `Upload via SFTP` step, parsing/validation in `internal/config/config.go`,
   a row in `docs/configuration.md`, and (if it's a real behavior change) a
   test. Don't forget `action.yml` input descriptions are user-facing docs too.
-  Two drift-check lists must also be extended, or tests fail: `wantInputs` in
-  `internal/actionmeta/actionmeta_test.go` (the actionmeta test errors on any
-  wired env var missing from it), and the cleared-env list in `setBaseEnv`
+  Three drift-check lists must also be extended, or tests fail: `wantInputs`
+  in `internal/actionmeta/actionmeta_test.go` (the actionmeta test errors on
+  any wired env var missing from it), the cleared-env list in `setBaseEnv`
   (`internal/config/config_test.go`), which keeps config tests hermetic when
-  the ambient environment sets `EASYSFTP_*` variables.
+  the ambient environment sets `EASYSFTP_*` variables, and the config-file
+  key set: any key added to or removed from the yaml structs in
+  `internal/config/configfile.go` must appear in `allowedKeys` there and in
+  `schema/easysftp.schema.json`, or the schema-parity tests in
+  `internal/config/schema_parity_test.go` fail (they also load
+  `docs/easysftp.example.yml` through the real parser, so the copy-paste
+  example is a tested artifact).
 
 ## Where a setting lives (v3)
 
@@ -360,6 +366,15 @@ for a workload feature), not merely when it changes what the policy decides.
   runs inside the caller's run, which is why the release sweep takes a
   concurrency group of its own instead of queueing behind a group that same run
   already holds.
+- The benchmark jobs that measure on the self-hosted runner hold `contents:
+  read` only, persist no checkout credentials, and never push (issue #283):
+  the candidate they build and run may be a pull request's code, and a write
+  token next to it is a token that can move the rolling `v3` tags. Writing to
+  `main` is the separate, GitHub-hosted `store` job of the same workflows,
+  which builds the harness from `main` and downloads the measurement as an
+  artifact. `internal/benchmark/workflow_posture_test.go` pins this; a
+  checkout that re-adds persisted credentials or a write token to a
+  self-hosted job fails `go test ./internal/benchmark`.
 - The self-test job in `.github/workflows/ci.yml` is the only place a real
   OpenSSH server is exercised, and the only place `action.yml`'s composite
   wiring runs end to end. Unit tests set `EASYSFTP_*` directly and never see
@@ -410,9 +425,11 @@ Inside `internal/benchmark`:
   `link` parses profiles and drives `tc` and `cmd/linkprobe`, `driver` is the
   two measuring loops, and `store` is the result directory.
 - `driver`'s own tests re-execute the test binary as a stub easySFTP build and
-  assert on what comes out; `store`'s tests cover the result directory. Since
-  step 6 these are the only self-checks the harness has, so a behaviour worth
-  keeping belongs in one of them.
+  assert on what comes out; `store`'s tests cover the result directory. `report`'s
+  tests pin the renderer against the committed corpus and a full-branch fixture,
+  `cmd/easysftp-bench`'s pin its environment parsing, and `link`'s pin the
+  profile grammar and the probe document wrapping. A behaviour worth keeping
+  belongs in one of these self-checks.
 
 A scenario carries a *shape* as well as a payload (`scenario.ShapeOf`: mode,
 whether the measured run redeploys over an unmeasured one, flat or deep

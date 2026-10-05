@@ -44,11 +44,12 @@ inputs:
     required: false
   host-key:
     description: >-
-      Expected SHA256 fingerprint(s) of the server's host key, one per line
-      (format "SHA256:..."). The connection is accepted if the server presents
-      a key matching any of them, so you can simply pin all of your server's
-      keys. Obtain the fingerprints with: ssh-keyscan <server> | ssh-keygen -lf -
-      Without this input or known-hosts, the run fails unless
+      Expected SHA256 fingerprint(s) of the server's host key, one per line.
+      The output of "ssh-keyscan <server> | ssh-keygen -lf -" works as-is:
+      each line carries the fingerprint plus other fields, and only the
+      "SHA256:..." field is read. The connection is accepted if the server
+      presents a key matching any of them, so you can simply pin all of your
+      server's keys. Without this input or known-hosts, the run fails unless
       allow-any-host-key is explicitly set.
     required: false
   known-hosts:

@@ -190,7 +190,7 @@ sync:
 | `version` | ✅ | Must be `3`. |
 | `connection` | ✅ | Where and as whom to connect. Credentials are **not** here; they stay inputs. |
 | `defaults` | | `mode` and `exclude` defaults applied to every deployment. |
-| `deployments` | ✅ | A **map** of named deployments (at least one). The name appears in logs and the job summary. |
+| `deployments` | ✅ | A **map** of named deployments (at least one). The name appears in logs and the job summary. Two `mode: sync` deployments must not share one target: they would read and write the same sync manifest and delete each other's files, so that configuration is refused; see [strategies](strategies.md#sync). |
 | `safety` | | `max_deletes`: the most remote entries, **files and directories together**, the **whole run** may remove (0 = unlimited, the default); see [delete guards](strategies.md#delete-guards). |
 | `advanced` | | Transfer tuning; the defaults suit most deploys. |
 | `permissions` | | Remote file/dir modes and `preserve_times` (all best-effort). |
@@ -215,7 +215,7 @@ current `golang.org/x/crypto/ssh` version classifies as supported and adds the
 named values. Categories you omit keep the library defaults exactly. Prefer
 upgrading the server, and enable only the one algorithm the server needs.
 
-³ As in inline mode, exactly one of `host_key`/`known_hosts`/`allow_any_host_key` is required, per hop.
+³ As in inline mode, at least one of `host_key`/`known_hosts` is required per hop, or you must explicitly opt out with `allow_any_host_key: true`; setting both `host_key` and `known_hosts` is allowed, and a key matching either is accepted.
 
 #### `deployments.<name>`
 
@@ -231,7 +231,7 @@ upgrading the server, and enable only the one algorithm the server needs.
 | Field | Default | Description |
 |---|---|---|
 | `retries` | `2` | Retries per file on transient errors, and the reconnect budget for dropped connections. Failures the server reports with a permanent status code are never retried; see [which upload failures are retried](troubleshooting.md#which-upload-failures-easysftp-retries). `0` disables. |
-| `timeout` | `30` | Connection timeout in seconds. `0` disables. Capped at `86400` (a day). |
+| `timeout` | `30` | Connection timeout in seconds, covering the whole initial connection: the TCP dial, the SSH handshake of every hop (including through a jump host) and the SFTP session setup. A server that accepts and then stalls fails here instead of hanging the run. `0` disables. Capped at `86400` (a day). |
 | `stall_timeout` | `0` (off) | Abort when active remote operations make no progress for this many seconds. Capped at `86400` (a day). |
 | `concurrency` | `auto` | Files uploaded in parallel, and independent remote metadata requests such as directory setup, stale-temp cleanup, scans and deletes. `auto` sizes it to the work (see [transfer tuning](tuning.md)). Sync hashing uses the runner's available Go CPU parallelism independently. |
 | `request_concurrency` | `auto` | Max in-flight SFTP requests per file (pipelining within one transfer). `auto` sizes it to the largest file and to what the whole set costs to hold in flight (see [transfer tuning](tuning.md)). |
@@ -368,7 +368,11 @@ destination:
   `/`, which means "into this directory" keeping the original file name.
 - Single files only support the `overlay` mode (`sync`/`clean` reconcile a
   directory tree and are rejected for single-file targets).
-- Symlinks, sockets and other non-regular files are skipped.
+- Symlinks, sockets and other non-regular files *inside* the source tree are
+  skipped. A `source` that is itself a symlink to a directory (or, on
+  Windows, a junction) is followed: the directory it points at is uploaded.
+  A junction whose target cannot be resolved fails the run rather than
+  deploying an empty plan.
 
 ```yaml
     source: ./config/prod.json

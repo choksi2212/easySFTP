@@ -112,7 +112,7 @@ func (h hop) clientConfig(timeout time.Duration, log Logger) (*ssh.ClientConfig,
 	if err != nil {
 		return nil, permanentError{err}
 	}
-	cb, err := hostKeyCallback(h, log)
+	cb, pinned, err := hostKeyCallback(h, log)
 	if err != nil {
 		return nil, permanentError{err}
 	}
@@ -123,6 +123,12 @@ func (h hop) clientConfig(timeout time.Duration, log Logger) (*ssh.ClientConfig,
 		Timeout:         timeout,
 	}
 	applySSHAlgorithms(client, h.algorithms)
+	// An explicit algorithms.host_key_algorithms list stays authoritative;
+	// only without one do the known-hosts lines pick the types to offer (see
+	// pinnedHostKeyAlgorithms).
+	if client.HostKeyAlgorithms == nil && len(pinned) > 0 {
+		client.HostKeyAlgorithms = pinned
+	}
 	return client, nil
 }
 
@@ -241,10 +247,16 @@ func connect(cfg *config.Config, requests int, log Logger) (*ssh.Client, *sftp.C
 		}
 	}
 
+	// NewClient waits for the server's SSH_FXP_VERSION, which a dead or
+	// tarpitted server never sends; it gets the same bound as the handshake
+	// (issue #277). Closing the SSH client fails that wait, and the timer is
+	// disarmed the moment the wait is over.
+	disarm := armConnectDeadline(cfg.Timeout, func() { sshClient.Close() })
 	sftpClient, err := sftp.NewClient(sshClient,
 		sftp.UseConcurrentWrites(true),
 		sftp.MaxConcurrentRequestsPerFile(requests),
 	)
+	disarm()
 	if err != nil {
 		sshClient.Close()
 		cleanup()
@@ -253,22 +265,36 @@ func connect(cfg *config.Config, requests int, log Logger) (*ssh.Client, *sftp.C
 	return sshClient, sftpClient, cleanup, nil
 }
 
-// dialSSH is ssh.Dial, except that a benchmark run (metrics enabled) gets the
-// transport wrapped in a byte counter first, which is the only way to see what
-// the SSH framing adds on top of the payload. A normal run takes the plain
-// ssh.Dial path and is bit for bit what it was before the counter existed:
-// this must not put a wrapper into every production transfer.
+// dialSSH opens one SSH connection: TCP dial plus handshake, the same pair
+// ssh.Dial performs. A benchmark run (metrics enabled) additionally gets the
+// transport wrapped in a byte counter, which is the only way to see what the
+// SSH framing adds on top of the payload; a normal run must not have that
+// wrapper in every production transfer, so it stays unwrapped.
 func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
-	if !metrics.Enabled() {
-		return ssh.Dial("tcp", addr, cfg)
-	}
-	// Mirrors ssh.Dial: the config timeout covers the TCP dial, the handshake
-	// deadline handling stays inside ssh.NewClientConn.
+	// Both paths below mirror ssh.Dial, split open here so the handshake can
+	// run under the config's own timeout. ssh.Dial applies ClientConfig.Timeout
+	// to the TCP dial alone, and a server that accepts and then goes silent (an
+	// overloaded host, a firewall that completes the TCP handshake and drops
+	// the rest, a tarpit in front of port 22) would hang NewClientConn forever:
+	// the version exchange, key exchange and authentication have no deadline of
+	// their own (issue #277). The deadline covers the handshake only; it is
+	// cleared again below, since a deadline left on the connection would abort
+	// every later transfer (the same shape internal/linkprobe works around).
 	c, err := net.DialTimeout("tcp", addr, cfg.Timeout)
 	if err != nil {
 		return nil, err
 	}
-	ncc, chans, reqs, err := ssh.NewClientConn(metrics.CountConn(c), addr, cfg)
+	if cfg.Timeout > 0 {
+		_ = c.SetDeadline(time.Now().Add(cfg.Timeout))
+	}
+	var transport net.Conn = c
+	if metrics.Enabled() {
+		transport = metrics.CountConn(c)
+	}
+	ncc, chans, reqs, err := ssh.NewClientConn(transport, addr, cfg)
+	if cfg.Timeout > 0 {
+		_ = c.SetDeadline(time.Time{})
+	}
 	if err != nil {
 		c.Close()
 		return nil, err
@@ -293,12 +319,25 @@ func dialViaJump(cfg *config.Config, targetAddr string, targetConfig *ssh.Client
 	}
 	logHostKeyStatus(jump, log)
 	log.Infof("connecting to %s as %s through the jump host ...", targetAddr, targetConfig.User)
+	// The tunnel's net.Conn is an SSH channel, which does not support
+	// deadlines ("ssh: tcpChan: deadline not supported"), so the socket
+	// deadline dialSSH uses is not available here. A timer that closes the
+	// jump client is the only bound: closing it tears down the tunnel's
+	// channel, which fails the dial and the handshake over it (issue #277).
+	disarm := armConnectDeadline(cfg.Timeout, func() { jumpClient.Close() })
 	conn, err := jumpClient.Dial("tcp", targetAddr)
 	if err != nil {
+		disarm()
 		jumpClient.Close()
 		return nil, nil, fmt.Errorf("dialing %s through jump host %s: %w", targetAddr, jump.addr, err)
 	}
 	ncc, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, targetConfig)
+	// Disarmed the moment the wait is over, not deferred: a timer left armed
+	// past a successful handshake would close a healthy tunnel later, for no
+	// reason. If it fires exactly as one of these calls completes, the client
+	// is dead on arrival, which reads as a connection failure on first use and
+	// takes the normal retry path.
+	disarm()
 	if err != nil {
 		conn.Close()
 		jumpClient.Close()
@@ -364,4 +403,15 @@ func passwordChallenge(password string) ssh.KeyboardInteractiveChallenge {
 		answeredSecret = true
 		return answers, nil
 	}
+}
+
+// armConnectDeadline arranges for kill to run after timeout and returns the
+// disarm function. A timeout of zero (the documented no-timeout escape hatch
+// for advanced.timeout) arms nothing and disarms nothing.
+func armConnectDeadline(timeout time.Duration, kill func()) func() {
+	if timeout <= 0 {
+		return func() {}
+	}
+	t := time.AfterFunc(timeout, kill)
+	return func() { t.Stop() }
 }

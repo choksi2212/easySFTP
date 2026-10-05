@@ -2,9 +2,11 @@ package uploader
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,6 +76,98 @@ func TestAutoCacheRecordsWhatARunMeasured(t *testing.T) {
 		t.Fatal(err)
 	}
 	readCache(t, path)
+}
+
+// waitLiveDrained blocks until the test server reports no live connections,
+// which is the state a concurrent-connection limit has to see before a second
+// run can be welcome again.
+func waitLiveDrained(t *testing.T, srv *testServer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt32(&srv.liveCount) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n := atomic.LoadInt32(&srv.liveCount); n != 0 {
+		t.Fatalf("%d connection(s) never drained; a concurrent limit would refuse the next run", n)
+	}
+}
+
+// TestAutoCacheRecordsTheCeilingTheServerActuallyGave is the refusal half of
+// the cache, end to end (issue #281): a run whose pool the server cut short
+// must write the ceiling it was granted, and a run that inherits that ceiling
+// must not ask for more than the server allows again. The first half is what
+// "a run that was told should not have to be told again" means for a
+// connection limit; the second is the warning docs/tuning.md tells a user to
+// stop seeing.
+//
+// The tree is deliberately large: the pool has to be the plan's own choice
+// (advanced.connections is at auto), and a real deployment only earns one when
+// the bytes are worth a handshake, so the files are big enough that the plan's
+// arithmetic says "wide" on any link an in-process server can measure.
+// withMaxLiveConns, not withMaxConns: a per-account limit is concurrent, and a
+// second run has to be welcome once the first has closed its connections.
+func TestAutoCacheRecordsTheCeilingTheServerActuallyGave(t *testing.T) {
+	srv := startTestServer(t, withMaxLiveConns(2))
+	local := t.TempDir()
+	// Big files, so the plan wants a pool wider than the server allows
+	// whatever the in-process link measures: the throughput term of
+	// SingleConnectionEstimate dominates every round-trip term.
+	files := make(map[string]string, 40)
+	for i := range 40 {
+		files[fmt.Sprintf("file%02d.bin", i)] = strings.Repeat("x", 1<<20)
+	}
+	writeTree(t, local, files)
+	path := filepath.Join(t.TempDir(), "cache", "auto.json")
+
+	cfg := autoConfig(srv)
+	cfg.AutoCachePath = path
+	cfg.Uploads = []config.UploadPair{{Local: local, Remote: "/www"}}
+
+	log1 := &recordingLogger{testLogger: testLogger{t}}
+	if _, err := Run(context.Background(), cfg, log1); err != nil {
+		t.Fatal(err)
+	}
+	rec := readCache(t, path)
+	if rec.ConnectionCeiling != 2 {
+		t.Errorf("the run was granted 2 connection(s) and must remember exactly that, not %d", rec.ConnectionCeiling)
+	}
+	if !hasLine(log1.warnings, "would not open more than") {
+		t.Errorf("the first run met the limit but did not say so: %v", log1.warnings)
+	}
+
+	// What the next run does with that number, checked directly rather than
+	// through a second Run: whether the record survives the round-trip-time
+	// gate is a property of the link, but what it does when it survives is
+	// this run's answer, and that is deterministic. A plan from the same
+	// tree, clamped by the ceiling this run recorded, stays inside what the
+	// server allows, so the next run is never told no again.
+	tune := newTuning(cfg)
+	tune.setLink(autotune.Link{RTT: 13 * time.Millisecond, Handshake: 360 * time.Millisecond})
+	tune.applyCache(autocache.Decision{Hit: true, ConnectionCeiling: rec.ConnectionCeiling})
+	items := make([]fileItem, 40)
+	for i := range items {
+		items[i] = fileItem{size: 1 << 20}
+	}
+	if got := tune.planFor(uploadWorkload(items, false)).Connections; got != 2 {
+		t.Errorf("a run that inherits the ceiling of %d plans %d connection(s); it must not ask for more than the server allows", rec.ConnectionCeiling, got)
+	}
+
+	// The first run's connections are closed client-side before Run returns,
+	// but the server only sees the closes when its handler goroutines get to
+	// them; a concurrent limit counts live connections, so wait for the count
+	// to drain before asking the server for new ones.
+	waitLiveDrained(t, srv)
+
+	// A second run against the same server, whatever the link gate did with
+	// the record: the ceiling in the cache is the one this server will keep
+	// answering, so it must still be the grant and not the plan.
+	log2 := &recordingLogger{testLogger: testLogger{t}}
+	if _, err := Run(context.Background(), cfg, log2); err != nil {
+		t.Fatal(err)
+	}
+	if rec2 := readCache(t, path); rec2.ConnectionCeiling != 2 {
+		t.Errorf("the second run left a ceiling of %d; the server still allows exactly 2", rec2.ConnectionCeiling)
+	}
 }
 
 // TestAutoCacheIsOffWithoutAPath: the default is no cache at all, and a run
