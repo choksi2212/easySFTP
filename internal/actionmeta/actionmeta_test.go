@@ -21,7 +21,8 @@ type metadata struct {
 }
 
 type actionInput struct {
-	Default string `yaml:"default"`
+	Default     string `yaml:"default"`
+	Description string `yaml:"description"`
 }
 
 type actionStep struct {

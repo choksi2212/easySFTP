@@ -38,13 +38,36 @@ $ go build ./cmd/easysftp
 
 ```
 action.yml               the composite action: inputs → EASYSFTP_* env vars
-cmd/easysftp/            binary entry point
+cmd/easysftp/            binary entry point the action runs
+cmd/easysftp-bench/      benchmark harness: measures a run and files it under benchmarks/
+cmd/linkprobe/           prints the network-path measurement (see internal/linkprobe) as JSON
 internal/config/         env + YAML config parsing and validation
 internal/uploader/       SFTP connection, planning, strategies, transfers
+internal/autotune/       resolves transport settings left at "auto": connections,
+                         parallel files, requests in flight
+internal/autocache/      carries what one run measured about its server to the next
+internal/metrics/        benchmark instrumentation for one run; off unless a
+                         metrics file is named
+internal/linkprobe/      measures the network path to the SFTP server: round-trip
+                         time, a control throughput, server load
 internal/gha/            GitHub Actions helpers (outputs, annotations, summary)
+internal/actionmeta/     drift-check tests over action.yml and this guide
+internal/benchmark/      the measurement harness (8 sub-packages: driver, link,
+                         report, runner, scenario, schema, stats, store)
 schema/                  JSON Schema for the YAML config file
+benchmarks/              stored benchmark results, filed by cmd/easysftp-bench
+scripts/                 CI helper scripts the action and its self-test use
+                         (prepare-action.sh, test-action.sh, action-lib.sh,
+                         mask-credentials.sh)
+site/                    the project website (static HTML)
 docs/                    user documentation
 ```
+
+`internal/benchmark/`, `internal/linkprobe`, `internal/metrics`,
+`cmd/easysftp-bench`, `cmd/linkprobe` and the stored results in `benchmarks/`
+are the benchmark harness. Together they are about half the Go code in this
+repository, and none of them is needed to work on the action itself: start in
+`cmd/easysftp`, `internal/config` and `internal/uploader`.
 
 ### Running the binary locally
 
@@ -53,11 +76,26 @@ See [action.yml](action.yml) for the mapping. Example against a local SFTP
 server:
 
 ```console
-$ EASYSFTP_SERVER=localhost EASYSFTP_PORT=2222 \
+$ EASYSFTP_HOST=localhost EASYSFTP_PORT=2222 \
   EASYSFTP_USERNAME=demo EASYSFTP_PASSWORD=demopass \
-  EASYSFTP_UPLOADS="./dist/ => /upload/" EASYSFTP_DRY_RUN=true \
+  EASYSFTP_ALLOW_ANY_HOST_KEY=true \
+  EASYSFTP_SOURCE=./dist EASYSFTP_TARGET=/upload \
+  EASYSFTP_DRY_RUN=true \
   go run ./cmd/easysftp
 ```
+
+`EASYSFTP_ALLOW_ANY_HOST_KEY=true` is only acceptable against a throwaway
+local server. Against anything else, pin the host key with
+`EASYSFTP_HOST_KEY` or `EASYSFTP_KNOWN_HOSTS`; in v3 an unverified
+connection is never the silent default.
+
+Every `EASYSFTP_*` variable this guide names must be a live v3 input: a
+removed v2 variable does not misbehave, it fails the run with a migration
+error before anything happens (see
+[internal/config/config.go](internal/config/config.go), `removedInputs`).
+[internal/actionmeta](internal/actionmeta) holds the tests that enforce this
+and that load the example above through the real config parser, so neither
+can drift back into v2 inputs.
 
 ### Tests
 

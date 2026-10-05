@@ -47,7 +47,11 @@ Guiding principles for changes here:
   `schema/easysftp.schema.json`, or the schema-parity tests in
   `internal/config/schema_parity_test.go` fail (they also load
   `docs/easysftp.example.yml` through the real parser, so the copy-paste
-  example is a tested artifact).
+  example is a tested artifact). `CONTRIBUTING.md` is a fourth tested
+  surface: the tests in `internal/actionmeta/contributing_test.go` fail if
+  the guide names a removed input, if its local-run example stops loading
+  through the real config parser, or if the repository layout map hides a
+  binary, internal package or top-level directory (issue #232).
 
 ## Where a setting lives (v3)
 
