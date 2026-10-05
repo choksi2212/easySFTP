@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loadFile runs a config file's content through the loader against a fresh
@@ -239,6 +241,79 @@ deployments:
 		!strings.Contains(err.Error(), `did you mean "auto_cache"?`) {
 		t.Errorf("a typo next to auto_cache was not suggested against: %v", err)
 	}
+}
+
+// sharedMergeDAG builds the acyclic merge DAG from the PR-290 review: a base
+// anchor a0, then a chain where each anchor merges the previous one *twice*
+// (`a1: &a1 {<<: [*a0, *a0]}`, and so on). Every anchor is shared and
+// acyclic, so this is a stack of diamonds, not a cycle - but a walk that
+// revisits shared anchors costs 2^depth visits, roughly a billion at thirty
+// levels, in a file with only a few dozen nodes.
+func sharedMergeDAG(depth int) string {
+	var b strings.Builder
+	b.WriteString(`version: 3
+connection:
+  host: h
+  username: u
+deployments:
+  a0: &a0
+    source: dist
+    target: /t0
+`)
+	for i := 1; i <= depth; i++ {
+		fmt.Fprintf(&b, `  a%d: &a%d
+    <<: [*a%d, *a%d]
+`, i, i, i-1, i-1)
+	}
+	return b.String()
+}
+
+// TestConfigFileSharedMergeDAG pins the cost of walking shared merge
+// anchors: each anchor is validated once no matter how many times it is
+// referenced, so the walk stays linear in the size of the file. checkKeys
+// runs before typed decoding, so the decoder's alias-expansion limit cannot
+// bound this walk; the walk has to bound itself.
+func TestConfigFileSharedMergeDAG(t *testing.T) {
+	t.Run("a chain of anchors merged twice each still loads", func(t *testing.T) {
+		cfg, err := loadFile(t, sharedMergeDAG(6))
+		if err != nil {
+			t.Fatalf("a shared acyclic merge DAG was rejected: %v", err)
+		}
+		if len(cfg.Uploads) != 7 {
+			t.Fatalf("expected 7 deployments, got %d", len(cfg.Uploads))
+		}
+		for i, up := range cfg.Uploads {
+			if up.Local != "dist" || up.Remote != "/t0" {
+				t.Errorf("deployment %d did not resolve through the anchor chain: local %q target %q", i, up.Local, up.Remote)
+			}
+		}
+	})
+	t.Run("a deep DAG is refused by the decoder, not walked exponentially", func(t *testing.T) {
+		// Depth 35 means 2^35 merge-target visits for a walk that revisits
+		// shared anchors: that walk does not finish inside a CI timeout.
+		// The memoized walk finishes in milliseconds and lets yaml.v3's
+		// own aliasing guard refuse the document with its "excessive
+		// aliasing" error, the decoder's designed protection for exactly
+		// this shape. Any failure here is a timeout, not a red test.
+		start := time.Now()
+		_, err := loadFile(t, sharedMergeDAG(35))
+		elapsed := time.Since(start)
+		if err == nil || !strings.Contains(err.Error(), "excessive aliasing") {
+			t.Fatalf("expected the decoder's aliasing error on a deep shared DAG, got %v", err)
+		}
+		if elapsed > 10*time.Second {
+			t.Fatalf("the key walk of a shared merge DAG took %v; a shared anchor must be walked once, not once per reference", elapsed)
+		}
+	})
+	t.Run("a typo deep in a shared DAG is still caught", func(t *testing.T) {
+		_, err := loadFile(t, sharedMergeDAG(4)+`  broken:
+    <<: *a4
+    taget: /typo
+`)
+		if err == nil || !strings.Contains(err.Error(), `unknown option "taget"`) {
+			t.Fatalf("expected the typo inside the merged deployment to be caught, got %v", err)
+		}
+	})
 }
 
 // TestConfigFileParserGaps covers the six config-file parser gaps from

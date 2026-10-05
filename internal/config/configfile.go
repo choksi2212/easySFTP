@@ -183,7 +183,7 @@ var allowedKeys = map[string][]string{
 // Walk those instead of reporting "<<" as unknown, and keep walking when the
 // merge value is a sequence of aliases, which YAML also allows.
 func checkKeys(node *yaml.Node, section, location string) error {
-	return checkKeysVisited(node, section, location, map[*yaml.Node]bool{})
+	return checkKeysVisited(node, section, location, keyWalkState{})
 }
 
 // isMergeKey reports whether key is a merge key in the decoder's sense:
@@ -195,13 +195,67 @@ func isMergeKey(key *yaml.Node) bool {
 	return key.Tag == "!!merge" || (key.Value == "<<" && key.Tag != "!!str")
 }
 
-// checkKeysVisited is checkKeys carrying the set of alias targets already
-// walked, so a self-referential merge key (a: &a with <<: *a inside it)
-// fails with a cyclic-merge error instead of recursing until the stack
-// overflows. yaml.v3 itself resolves such loops only when decoding, and the
-// walk here predates that, so the guard belongs here.
-func checkKeysVisited(node *yaml.Node, section, location string, visited map[*yaml.Node]bool) error {
+// keyWalkState carries the two bookkeeping sets the key walk needs:
+//
+//   - visiting: the alias targets on the current merge chain, so a
+//     self-referential merge key (a: &a with <<: *a inside it) fails with a
+//     cyclic-merge error instead of recursing until the stack overflows.
+//     yaml.v3 itself resolves such loops only when decoding, and the walk
+//     here predates that, so the guard belongs here.
+//
+//   - done: the (node, section) pairs already walked to completion. A
+//     shared anchor merged into several siblings is walked once, not once
+//     per reference: without this memo, a chain of anchors each merging the
+//     previous anchor twice (`a1: &a1 {<<: [*a0, *a0]}` and so on) makes the
+//     walk exponential, a billion visits around thirty levels deep, in a
+//     file with only a few dozen nodes. checkKeys runs before typed
+//     decoding, so the decoder's own alias-expansion limit cannot bound this
+//     work; the walk bounds itself.
+type keyWalkState struct {
+	visiting map[*yaml.Node]bool
+	done     map[keyWalk]bool
+}
+
+// keyWalk is one memo entry: a mapping node walked against one section's key
+// set. A node reached under two different sections can validate differently,
+// so the section is part of the identity.
+type keyWalk struct {
+	node    *yaml.Node
+	section string
+}
+
+// markVisiting claims node as on the current merge chain and returns a
+// function that releases the claim when the chain is left.
+func (s *keyWalkState) markVisiting(node *yaml.Node) (release func()) {
+	if s.visiting == nil {
+		s.visiting = map[*yaml.Node]bool{}
+	}
+	s.visiting[node] = true
+	return func() { delete(s.visiting, node) }
+}
+
+// memoize records that node validated cleanly against section's key set.
+func (s *keyWalkState) memoize(node *yaml.Node, section string) {
+	if s.done == nil {
+		s.done = map[keyWalk]bool{}
+	}
+	s.done[keyWalk{node: node, section: section}] = true
+}
+
+// memoized reports whether node was already walked to completion against
+// section's key set.
+func (s *keyWalkState) memoized(node *yaml.Node, section string) bool {
+	return s.done[keyWalk{node: node, section: section}]
+}
+
+// checkKeysVisited is checkKeys carrying the walk's bookkeeping: the merge
+// chain under construction, for cycle detection, and the completed walks,
+// so a shared anchor costs one visit no matter how many times it is merged.
+func checkKeysVisited(node *yaml.Node, section, location string, state keyWalkState) error {
 	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if state.memoized(node, section) {
 		return nil
 	}
 	allowed := allowedKeys[section]
@@ -234,21 +288,22 @@ func checkKeysVisited(node *yaml.Node, section, location string, visited map[*ya
 				}
 			}
 			for _, target := range targets {
-				if visited[target] {
+				if state.visiting[target] {
 					return fmt.Errorf("cyclic merge at %q: a merge key refers back to the mapping that contains it", at)
 				}
-				visited[target] = true
-				err := checkKeysVisited(target, section, location, visited)
+				release := state.markVisiting(target)
+				err := checkKeysVisited(target, section, location, state)
 				// Back-track: the mark means "on this merge chain", not
 				// "ever seen". A shared anchor referenced by two siblings
 				// is a diamond, not a cycle - the one-base-many-targets
 				// pattern the example config itself demonstrates - while
 				// a real self-cycle still fails, because its mark stays
 				// set for as long as the chain containing it is walked.
-				delete(visited, target)
+				release()
 				if err != nil {
 					return err
 				}
+				state.memoize(target, section)
 			}
 			continue
 		}
@@ -267,16 +322,18 @@ func checkKeysVisited(node *yaml.Node, section, location string, visited map[*ya
 			sub = section + "." + key.Value
 		}
 		if _, ok := allowedKeys[sub]; ok {
-			if err := checkKeysVisited(value, sub, at, visited); err != nil {
+			if err := checkKeysVisited(value, sub, at, state); err != nil {
 				return err
 			}
+			state.memoize(value, sub)
 		}
 		if (section == "" && key.Value == "deployments") && value.Kind == yaml.MappingNode {
 			for j := 0; j+1 < len(value.Content); j += 2 {
 				name, dep := value.Content[j].Value, value.Content[j+1]
-				if err := checkKeysVisited(dep, "deployments.*", "deployments."+name, visited); err != nil {
+				if err := checkKeysVisited(dep, "deployments.*", "deployments."+name, state); err != nil {
 					return err
 				}
+				state.memoize(dep, "deployments.*")
 			}
 		}
 	}
