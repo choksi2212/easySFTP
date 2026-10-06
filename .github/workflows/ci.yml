@@ -13,8 +13,12 @@ jobs:
     name: Action launcher and metadata (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # macOS ships in release-binaries.yml and the README's comparison table,
+      # so the unit matrix builds and tests it too (issue #238). The macOS
+      # runner also exercises the launcher's bash (scripts/test-action.sh),
+      # which the release workflow only smoke-tests (--help) today.
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       # No step in any job of this workflow pushes, so no checkout keeps its
@@ -69,8 +73,12 @@ jobs:
     name: Unit tests (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # macOS ships in release-binaries.yml and the README's comparison table,
+      # so the unit matrix builds and tests it too (issue #238). The macOS
+      # runner also exercises the launcher's bash (scripts/test-action.sh),
+      # which the release workflow only smoke-tests (--help) today.
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -111,7 +111,12 @@ read_release_version() {
     return 1
   fi
 
-  mapfile -t lines < "$version_file"
+  # Read line by line rather than mapfile: macOS ships bash 3.2 as
+  # /bin/bash and mapfile is a bash 4 builtin (issue #238). The || [[ -n ]]
+  # keeps a final line without a trailing newline, which mapfile kept too.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lines+=("$line")
+  done < "$version_file"
   if (( ${#lines[@]} != 3 )) ||
     [[ "${lines[0]}" != '# x-release-please-start-version' ]] ||
     [[ "${lines[2]}" != '# x-release-please-end' ]]; then
@@ -198,7 +203,11 @@ verify_release_checksum() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^([0-9A-Fa-f]{64})[[:space:]]+([^[:space:]]+)$ ]]; then
-      hash=${BASH_REMATCH[1],,}
+      # Lowercase with tr, not ${BASH_REMATCH[1],,}: the case-modifier
+      # expansion is a bash 4 feature and macOS ships bash 3.2 as /bin/bash
+      # (issue #238). The regex above already limits this to hex digits,
+      # where tr and the expansion agree exactly.
+      hash=$(tr '[:upper:]' '[:lower:]' <<<"${BASH_REMATCH[1]}")
       filename=${BASH_REMATCH[2]}
       filename=${filename#\*}
       if [[ "$filename" == "$asset" ]]; then
