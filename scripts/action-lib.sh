@@ -96,10 +96,8 @@ is_release_tag_ref() {
     "v$major" | "v$major.$minor" | "v$major.$minor.$patch")
       return 0
       ;;
-    *)
-      return 1
-      ;;
   esac
+  return 1
 }
 
 read_release_version() {
