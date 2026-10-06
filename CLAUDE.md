@@ -530,7 +530,12 @@ instead of silently dropping the older files. CI runs them in ci.yml's
 change here (or a stored document the layer cannot read) fails on the PR that
 makes it. `out/` is ignored except for the gallery
 `benchmarks/analysis/README.md` refers to; regenerate those files with the
-commands printed under each image when a new sweep or release lands.
+commands printed under each image when a new sweep or release lands. The
+gallery files are un-ignored by name in `.gitignore` (issue #245), so adding
+or dropping one is a two-file change: the negation in `.gitignore` and the
+reference on that page. Stored results up to v3.8.3 carry an
+`environment.runner_name`; nothing sets it any more, and the schema keeps the
+field so those files still decode strictly.
 
 ## Behavior worth knowing before you change it
 

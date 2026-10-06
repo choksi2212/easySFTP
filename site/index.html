@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>easySFTP — SFTP deploys for GitHub Actions</title>
-<meta name="description" content="Fast, secure and simple SFTP uploads for GitHub Actions. Three lines of workflow YAML to deploy, with host key pinning, atomic uploads and sync strategies.">
+<meta name="description" content="Secure, quick to set up and boring SFTP uploads for GitHub Actions. Three lines of workflow YAML to deploy, with host key pinning, atomic uploads and sync strategies.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -30,7 +30,7 @@
       <div>
         <p class="eyebrow"><span class="key">uses:</span> eiserv/easySFTP@v2</p>
         <h1>./dist/ <span class="arrow">=&gt;</span> /var/www/html/</h1>
-        <p class="lede">Fast, secure and simple SFTP uploads for GitHub Actions.
+        <p class="lede">Secure, quick to set up and boring SFTP uploads for GitHub Actions.
         Deploy your build output to any SFTP server, from a three-line workflow
         step up to fully configured multi-target deployments.</p>
         <div class="hero-actions">
@@ -59,10 +59,12 @@
       <h2 class="section-key">features</h2>
       <ul class="features">
         <li>
-          <h3>fast</h3>
+          <h3>parallel transfers</h3>
           <p>Release tags run a prebuilt, checksum-verified Go binary; files
           transfer in parallel with concurrent SFTP write requests per file.
-          No Docker, no runtime to install.</p>
+          No Docker, no runtime to install. The benchmark corpus measures
+          easySFTP against its own earlier releases and against the line's
+          single-stream control, not against other actions.</p>
         </li>
         <li>
           <h3>secure</h3>

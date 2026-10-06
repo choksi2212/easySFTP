@@ -69,10 +69,12 @@ type Options struct {
 	ConcurrencyDisplay string
 	RequestDisplay     string
 
-	// RunnerEnvironment and RunnerName are the two GitHub Actions variables
-	// that describe the machine.
+	// RunnerEnvironment is the GitHub Actions variable that says which kind
+	// of machine measured. A runner instance name used to travel alongside
+	// it and was dropped in issue #245: it named hosting infrastructure
+	// without saying anything the environment block does not already say,
+	// and every GitHub runner exports one, so it was recorded by default.
 	RunnerEnvironment string
-	RunnerName        string
 }
 
 // run is the state one measuring pass carries around.
@@ -388,14 +390,13 @@ type runRecord struct {
 // than the field being invented.
 func (r *run) environment() *schema.Environment {
 	env := &schema.Environment{
-		Runner:     r.opts.RunnerEnvironment,
-		OS:         firstLine(exec.Command("uname", "-s"), capitalized(runtime.GOOS)),
-		Kernel:     firstLine(exec.Command("uname", "-r"), ""),
-		Arch:       firstLine(exec.Command("uname", "-m"), runtime.GOARCH),
-		CPUModel:   cpuModel(),
-		CPUs:       cpuCount(),
-		GoVersion:  goVersion(),
-		RunnerName: r.opts.RunnerName,
+		Runner:    r.opts.RunnerEnvironment,
+		OS:        firstLine(exec.Command("uname", "-s"), capitalized(runtime.GOOS)),
+		Kernel:    firstLine(exec.Command("uname", "-r"), ""),
+		Arch:      firstLine(exec.Command("uname", "-m"), runtime.GOARCH),
+		CPUModel:  cpuModel(),
+		CPUs:      cpuCount(),
+		GoVersion: goVersion(),
 	}
 	return env
 }

@@ -94,7 +94,7 @@ Markdown:
 | Key | What it is |
 |---|---|
 | `candidate_ref`, `baseline_ref`, `repeats`, `runner`, `settings` | what was measured and how |
-| `environment` | OS, kernel, architecture, CPU model, CPU count, Go version |
+| `environment` | OS, kernel, architecture, CPU model, CPU count, Go version; `runner_name` was recorded up to v3.8.3 and is not set any more (issue #245) |
 | `link` | the network path: probed RTT, a throughput control, the server's load, and which shaping was asked for (see "The link profile" below) |
 | `scenarios` | the payload behind each scenario name |
 | `results[]` | one row per (build, scenario, link profile): the aggregate |
@@ -449,6 +449,14 @@ files are regenerated in full on every store, so they always describe what is
 actually on disk. Columns whose data predates the metric (peak RSS and CPU time
 on schema 1 results, the link columns on anything measured before the probe
 existed) are empty rather than zero.
+
+One warning the flat format cannot carry: the `runner` column is the
+comparability key, not decoration. The v3.3.1 rows were measured on a
+GitHub-hosted 4-CPU Azure runner and every later row on the self-hosted
+10-CPU one, so a plot that ignores the column and reads `median_ms` straight
+down the file shows a 5x improvement between two adjacent releases that is
+entirely a change of machine. Filter or group by `runner` before comparing
+rows.
 
 ## Official versus manual versus matrix
 
