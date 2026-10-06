@@ -1,0 +1,4 @@
+"scenario","build","ref","link_profile","rtt_p50_ms","control_single_mib_per_s","repeats","files","bytes","median_ms","min_ms","max_ms","mad_ms","mib_per_s","files_per_s","user_cpu_ms","sys_cpu_ms","cpu_percent","max_rss_bytes","go_gc_count","go_peak_goroutines","net_write_bytes","connections_opened","connections_refused","retries","errors","failed_runs"
+"large","candidate","v3.8.3 (ca27939)","baseline",12.91,0.42,3,2,33554432,45747,44707,48114,1040,0.7,0.04,470.9,490.05,2.11,9224192,0,159,33666572,2,0,0,0,0
+"mixed","candidate","v3.8.3 (ca27939)","baseline",12.91,0.42,3,56,12189696,10607,10238,11172,369,1.1,5.28,229.41,236.26,4.55,14888960,3,1091,12279356,8,0,0,0,0
+"small","candidate","v3.8.3 (ca27939)","baseline",12.91,0.42,3,300,1228800,3649,3229,3668,19,0.32,82.21,198.26,238.51,13.25,14495744,6,244,1446040,5,0,0,0,0

@@ -170,11 +170,16 @@ be scored two ways and both are worth having.
 committed under `benchmarks/matrix/` with at least three repeats and fails when
 the regret against the best measured cell goes over 15% (a gap under 300 ms
 passes on its absolute size, which is what the issue allows for sub-two-second
-runs). A choice the grid did not measure is interpolated between the cells that
-bracket it, not snapped to the nearest one: snapping broke ties upward, which
-is usually the faster column, so it flattered the policy by construction
-(issue #228). A sibling test asserts that the old fixed 1/4/16 would *fail* the
-replay, so it cannot quietly stop discriminating.
+runs). A choice the grid did not measure is scored two ways, in this order:
+when the workload cannot give a worker more than `Items()` items, every cell at
+or above the chosen concurrency ran exactly the workers the choice would, so
+their pooled durations are repeat measurements of it (aliasCells; the v3.8.2
+sync row, where interpolation said +29.9% while the sweep's own auto[] block had
+measured the same settings at +9.6%); otherwise the choice is interpolated
+between the cells that bracket it, not snapped to the nearest one: snapping
+broke ties upward, which is usually the faster column, so it flattered the
+policy by construction (issue #228). A sibling test asserts that the old fixed
+1/4/16 would *fail* the replay, so it cannot quietly stop discriminating.
 
 `internal/autotune/recorded_regret_test.go` **reads what a sweep recorded about
 itself**: the `auto[]` block holds the regret the policy actually achieved on
