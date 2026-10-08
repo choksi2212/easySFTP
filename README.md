@@ -3,7 +3,7 @@
 [![CI](https://github.com/eiserv/easySFTP/actions/workflows/ci.yml/badge.svg)](https://github.com/eiserv/easySFTP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Fast, secure and boring SFTP deploys for GitHub Actions.**
+**Secure, quick to set up and boring SFTP deploys for GitHub Actions.**
 
 easySFTP uploads your build output to any SFTP server. The common case is a
 few self-explanatory lines; complex, professional setups stay fully
@@ -93,10 +93,16 @@ to be wrong when you read it. Each project's releases page answers that
 question better than this table can: [Dylan700][dylan-rel], [SamKirkland][sam-rel],
 [wlixcc][wlixcc-rel], [wangyucode][wang-rel].
 
+One speed note, since the table has rows that sound like speed claims: nothing
+in the [benchmark corpus](benchmarks/README.md) compares easySFTP to another
+action, so this page does not either. What the corpus does show is easySFTP
+against its own earlier releases on one fixed runner, and against the
+single-stream control of the line it ran over.
+
 easySFTP is a clean, from-scratch implementation in Go, inspired by
 [Dylan700/sftp-upload-action][dylan]:
 
-- compiled static binary instead of a Node.js runtime (fast startup, parallel transfers)
+- compiled static binary instead of a Node.js runtime (no runtime install, parallel transfers)
 - works on Linux, macOS **and** Windows runners, with no Docker required
 - host key verification, atomic uploads, retries with backoff, structured
   outputs and a job summary

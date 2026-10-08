@@ -108,13 +108,17 @@ func (e *Envelope) Matrix() (*Matrix, error) {
 // measurement and varies per run, which is exactly why it must not sit in the
 // key that decides comparability (issue #184, phase 1).
 type Environment struct {
-	Runner     string `json:"runner,omitzero"`
-	OS         string `json:"os,omitzero"`
-	Kernel     string `json:"kernel,omitzero"`
-	Arch       string `json:"arch,omitzero"`
-	CPUModel   string `json:"cpu_model,omitzero"`
-	CPUs       int    `json:"cpus,omitzero"`
-	GoVersion  string `json:"go_version,omitzero"`
+	Runner    string `json:"runner,omitzero"`
+	OS        string `json:"os,omitzero"`
+	Kernel    string `json:"kernel,omitzero"`
+	Arch      string `json:"arch,omitzero"`
+	CPUModel  string `json:"cpu_model,omitzero"`
+	CPUs      int    `json:"cpus,omitzero"`
+	GoVersion string `json:"go_version,omitzero"`
+	// RunnerName is the runner's instance name. Results up to v3.8.3
+	// recorded it; nothing sets it any more (issue #245), but the field
+	// stays so those files keep decoding strictly and survive a round
+	// trip.
 	RunnerName string `json:"runner_name,omitzero"`
 }
 

@@ -97,11 +97,14 @@ func commonOptions() (driver.Options, error) {
 			Password:   os.Getenv("BENCH_PASSWORD"),
 			KnownHosts: os.Getenv("BENCH_KNOWN_HOSTS"),
 		},
-		LinkProbeBin:      os.Getenv("LINKPROBE_BIN"),
-		LinkIface:         os.Getenv("LINK_IFACE"),
-		LinkSudo:          os.Getenv("LINK_SUDO"),
+		LinkProbeBin: os.Getenv("LINKPROBE_BIN"),
+		LinkIface:    os.Getenv("LINK_IFACE"),
+		LinkSudo:     os.Getenv("LINK_SUDO"),
+		// The GitHub runner's instance-name variable is deliberately not
+		// read: the name is infrastructure naming with no analytical value,
+		// and it used to leak into every stored result's environment block
+		// (issue #245).
 		RunnerEnvironment: envOr("RUNNER_ENVIRONMENT", "local"),
-		RunnerName:        os.Getenv("RUNNER_NAME"),
 	}, nil
 }
 

@@ -1,6 +1,7 @@
 name: easySFTP
 description: >-
-  Fast, secure SFTP uploads for GitHub Actions with parallel transfers, host key pinning and rsync-like deployment modes.
+  Secure, quick to set up and boring SFTP deploys for GitHub Actions, with
+  parallel transfers, host key pinning and rsync-like deployment modes.
 author: eiserv
 
 branding:
