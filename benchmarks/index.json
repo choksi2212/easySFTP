@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-10-08T07:04:44Z",
+  "generated_at": "2026-10-08T07:10:43Z",
   "generated_by": "cmd/easysftp-bench store",
   "documentation": "benchmarks/README.md",
   "layout": {
@@ -13,6 +13,48 @@
   "keep_releases": 5,
   "latest_release": "v3.8.4",
   "entries": [
+    {
+      "kind": "matrix",
+      "version": null,
+      "label": "v3.8.4",
+      "official": false,
+      "recorded_at": "2026-10-08T07:10:43Z",
+      "commit": "4a4034c7782d2ef940e77a70a3dfd36db765d577",
+      "run_url": "https://github.com/eiserv/easySFTP/actions/runs/37741199491",
+      "candidate_ref": "v3.8.4 (4a4034c)",
+      "benchmark_kind": "matrix",
+      "benchmark_schema_version": 2,
+      "runner": "self-hosted, Linux 7.0.0-30-generic, 10 cpu",
+      "environment": {
+        "runner": "self-hosted",
+        "os": "Linux",
+        "kernel": "7.0.0-30-generic",
+        "arch": "x86_64",
+        "cpu_model": "Intel(R) Xeon(R) CPU           E5645  @ 2.40GHz",
+        "cpus": 10,
+        "go_version": "go1.26.7"
+      },
+      "link_profiles": [
+        "baseline"
+      ],
+      "rtt_p50_ms": 13.22,
+      "archived": false,
+      "json": "matrix/matrix-20261008T071043Z-v3.8.4.json",
+      "markdown": "matrix/matrix-20261008T071043Z-v3.8.4.md",
+      "repeats": 3,
+      "median_ms": {},
+      "best_ms": {
+        "bulk": 15734,
+        "calib-100x64k": 6395,
+        "deep": 6813,
+        "large": 46643,
+        "mixed": 10987,
+        "redeploy": 808,
+        "single": 78406,
+        "small": 3728,
+        "sync": 1108
+      }
+    },
     {
       "kind": "release",
       "version": "v3.8.4",
