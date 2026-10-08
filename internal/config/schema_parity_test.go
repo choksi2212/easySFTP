@@ -232,7 +232,9 @@ func TestExampleConfigFileParses(t *testing.T) {
 	if err := loadConfigFile(cfg, filepath.Join("..", "..", "docs", "easysftp.example.yml")); err != nil {
 		t.Fatalf("docs/easysftp.example.yml no longer parses: %v", err)
 	}
-	want := []string{"website", "documentation", "robots"}
+	// staging joins the example with PR #290: it is the merge-key
+	// deployment (`<<: *website`) the file now advertises.
+	want := []string{"website", "staging", "documentation", "robots"}
 	got := make([]string, len(cfg.Uploads))
 	for i, u := range cfg.Uploads {
 		got[i] = u.Name
