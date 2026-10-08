@@ -3,7 +3,7 @@
 [![CI](https://github.com/eiserv/easySFTP/actions/workflows/ci.yml/badge.svg)](https://github.com/eiserv/easySFTP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Secure, quick to set up and boring SFTP deploys for GitHub Actions.**
+**Secure and quick to set up SFTP deploys for GitHub Actions.**
 
 easySFTP uploads your build output to any SFTP server. The common case is a
 few self-explanatory lines; complex, professional setups stay fully
@@ -35,7 +35,7 @@ fingerprint lines are read from it as-is, one per line. (Without it,
 the deploy fails rather than trusting an unverified server; you can opt out
 with `allow-any-host-key: true`, but that allows man-in-the-middle attacks.)
 
-> **Not just simple deploys.** easySFTP is boring on purpose for the common
+> **Not just simple deploys.** easySFTP is lightweight on purpose for the common
 > case, but complex and professional setups are fully supported through an
 > optional [config file](#need-more-multiple-deployments-and-advanced-control):
 > multiple deployment targets, per-target modes, proxy/bastion connections,
