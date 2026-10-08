@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-10-06T11:55:35Z",
+  "generated_at": "2026-10-08T07:04:44Z",
   "generated_by": "cmd/easysftp-bench store",
   "documentation": "benchmarks/README.md",
   "layout": {
@@ -11,8 +11,43 @@
     "latest": "latest.{json,md}"
   },
   "keep_releases": 5,
-  "latest_release": "v3.8.3",
+  "latest_release": "v3.8.4",
   "entries": [
+    {
+      "kind": "release",
+      "version": "v3.8.4",
+      "label": null,
+      "official": true,
+      "recorded_at": "2026-10-08T07:04:44Z",
+      "commit": "4a4034c7782d2ef940e77a70a3dfd36db765d577",
+      "run_url": "https://github.com/eiserv/easySFTP/actions/runs/37741199491",
+      "candidate_ref": "v3.8.4 (4a4034c)",
+      "benchmark_kind": "standard",
+      "benchmark_schema_version": 2,
+      "runner": "self-hosted, Linux 7.0.0-30-generic, 10 cpu",
+      "environment": {
+        "runner": "self-hosted",
+        "os": "Linux",
+        "kernel": "7.0.0-30-generic",
+        "arch": "x86_64",
+        "cpu_model": "Intel(R) Xeon(R) CPU           E5645  @ 2.40GHz",
+        "cpus": 10,
+        "go_version": "go1.26.7"
+      },
+      "link_profiles": [
+        "baseline"
+      ],
+      "rtt_p50_ms": 12.93,
+      "archived": false,
+      "json": "releases/release-v3.8.4.json",
+      "markdown": "releases/release-v3.8.4.md",
+      "median_ms": {
+        "large": 50261,
+        "mixed": 11854,
+        "small": 3703
+      },
+      "best_ms": {}
+    },
     {
       "kind": "matrix",
       "version": null,
@@ -393,9 +428,9 @@
         "baseline"
       ],
       "rtt_p50_ms": 13.09,
-      "archived": false,
-      "json": "matrix/matrix-20260821T123508Z-v3.6.0.json",
-      "markdown": "matrix/matrix-20260821T123508Z-v3.6.0.md",
+      "archived": true,
+      "json": "archive/matrix/matrix-20260821T123508Z-v3.6.0.json",
+      "markdown": "archive/matrix/matrix-20260821T123508Z-v3.6.0.md",
       "repeats": 2,
       "below_analysis_threshold": true,
       "median_ms": {},
@@ -437,9 +472,9 @@
         "baseline"
       ],
       "rtt_p50_ms": 13.27,
-      "archived": false,
-      "json": "releases/release-v3.6.0.json",
-      "markdown": "releases/release-v3.6.0.md",
+      "archived": true,
+      "json": "archive/releases/release-v3.6.0.json",
+      "markdown": "archive/releases/release-v3.6.0.md",
       "median_ms": {
         "large": 52043,
         "mixed": 18170,
