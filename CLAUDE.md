@@ -384,6 +384,14 @@ for a workload feature), not merely when it changes what the policy decides.
   OpenSSH server is exercised, and the only place `action.yml`'s composite
   wiring runs end to end. Unit tests set `EASYSFTP_*` directly and never see
   declared input defaults, which is how #62 shipped green.
+- Both unit-matrix jobs in `ci.yml` (action-tests, test) run on
+  ubuntu-latest, windows-latest **and macos-latest** (issue #238): macOS is
+  an advertised platform with shipped binaries, so it is compiled and
+  tested before it is published rather than after. `internal/actionmeta`
+  pins the matrix against the README's platform claims. The launcher
+  scripts also stay bash 3.2 clean (no `mapfile`, no `${var,,}`): macOS
+  ships bash 3.2 as `/bin/bash`, and a self-hosted macOS runner without a
+  Homebrew bash must still be able to run them; that is pinned there too.
 
 ## Benchmarks
 
