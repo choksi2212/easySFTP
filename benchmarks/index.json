@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-10-08T07:10:43Z",
+  "generated_at": "2026-10-11T15:40:24Z",
   "generated_by": "cmd/easysftp-bench store",
   "documentation": "benchmarks/README.md",
   "layout": {
@@ -11,8 +11,43 @@
     "latest": "latest.{json,md}"
   },
   "keep_releases": 5,
-  "latest_release": "v3.8.4",
+  "latest_release": "v3.8.5",
   "entries": [
+    {
+      "kind": "release",
+      "version": "v3.8.5",
+      "label": null,
+      "official": true,
+      "recorded_at": "2026-10-11T15:40:24Z",
+      "commit": "16de9d6dd4604340014ce930aecdf43d9bf8d1c8",
+      "run_url": "https://github.com/eiserv/easySFTP/actions/runs/38152225753",
+      "candidate_ref": "v3.8.5 (16de9d6)",
+      "benchmark_kind": "standard",
+      "benchmark_schema_version": 2,
+      "runner": "self-hosted, Linux 7.0.0-30-generic, 10 cpu",
+      "environment": {
+        "runner": "self-hosted",
+        "os": "Linux",
+        "kernel": "7.0.0-30-generic",
+        "arch": "x86_64",
+        "cpu_model": "Intel(R) Xeon(R) CPU           E5645  @ 2.40GHz",
+        "cpus": 10,
+        "go_version": "go1.26.7"
+      },
+      "link_profiles": [
+        "baseline"
+      ],
+      "rtt_p50_ms": 13.04,
+      "archived": false,
+      "json": "releases/release-v3.8.5.json",
+      "markdown": "releases/release-v3.8.5.md",
+      "median_ms": {
+        "large": 51149,
+        "mixed": 12454,
+        "small": 4046
+      },
+      "best_ms": {}
+    },
     {
       "kind": "matrix",
       "version": null,
@@ -354,9 +389,9 @@
         "baseline"
       ],
       "rtt_p50_ms": 13.17,
-      "archived": false,
-      "json": "manual/manual-20260827T211904Z-pr-258.json",
-      "markdown": "manual/manual-20260827T211904Z-pr-258.md",
+      "archived": true,
+      "json": "archive/manual/manual-20260827T211904Z-pr-258.json",
+      "markdown": "archive/manual/manual-20260827T211904Z-pr-258.md",
       "median_ms": {
         "large": 53788,
         "mixed": 12799,
@@ -390,9 +425,9 @@
         "baseline"
       ],
       "rtt_p50_ms": 13.11,
-      "archived": false,
-      "json": "matrix/matrix-20260825T203337Z-v3.7.0.json",
-      "markdown": "matrix/matrix-20260825T203337Z-v3.7.0.md",
+      "archived": true,
+      "json": "archive/matrix/matrix-20260825T203337Z-v3.7.0.json",
+      "markdown": "archive/matrix/matrix-20260825T203337Z-v3.7.0.md",
       "repeats": 2,
       "below_analysis_threshold": true,
       "median_ms": {},
@@ -434,9 +469,9 @@
         "baseline"
       ],
       "rtt_p50_ms": 13.33,
-      "archived": false,
-      "json": "releases/release-v3.7.0.json",
-      "markdown": "releases/release-v3.7.0.md",
+      "archived": true,
+      "json": "archive/releases/release-v3.7.0.json",
+      "markdown": "archive/releases/release-v3.7.0.md",
       "median_ms": {
         "large": 52390,
         "mixed": 17219,
