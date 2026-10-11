@@ -142,56 +142,149 @@ func trimRightUnescapedSpace(line string) string {
 // excludes everything below it, the way a git walk never descends into
 // an ignored directory. The one deliberate difference is pinned by
 // TestIgnoreNegationReincludesBelowIgnoredDirectory and documented in
-// docs/configuration.md: the leaf verdict wins even below an excluded
+// docs/configuration.md: a re-include wins below an excluded
 // directory, so a "!" line can re-include a file git would never
 // reach, because the planner disables pruning whenever a "!" line is
-// present and walks the whole tree.
+// present and walks the whole tree. But that re-include only wins
+// when it is the later line: an earlier "!" re-include does not
+// shield the path from a directory exclude that comes after it, the
+// same way the last matching line decides every ordinary path. Both
+// verdicts carry their pattern index so the rule is a comparison, not
+// a guess.
 func (m *gitignoreMatcher) matchesHow(path string, isDir bool) (bool, *gitignorePattern) {
 	if path == "." {
 		return false, nil
 	}
 	segs := strings.Split(path, "/")
-	if excluded, pat, decided := m.lastMatchHow(segs, isDir); decided {
-		return excluded, pat
+	leafExcluded, leafPat, leafIdx, leafDecided := m.lastMatchIdx(segs, isDir)
+	if leafDecided && leafExcluded {
+		// A leaf exclude is final: the path's own last-matching line
+		// already decided it, and no ancestor pattern can override
+		// that.
+		return true, leafPat
 	}
 	for k := len(segs) - 1; k >= 1; k-- {
 		// The ancestors of a path are directories by definition.
-		if excluded, pat, decided := m.lastMatchHow(segs[:k], true); decided && excluded {
+		if excluded, pat, idx, decided := m.lastMatchIdx(segs[:k], true); decided && excluded {
+			// A leaf re-include beats the excluded ancestor only
+			// when it is the later line. A re-include written
+			// before the directory exclude leaves the ancestor's
+			// verdict standing, the same way the last matching
+			// line decides every ordinary path: the directory
+			// exclude is the more specific, later line. The leaf
+			// re-include winning below an excluded directory when
+			// it is the later line is the documented divergence.
+			if leafDecided && leafIdx > idx {
+				return false, leafPat
+			}
 			return true, pat
 		}
+	}
+	if leafDecided {
+		return false, leafPat
 	}
 	return false, nil
 }
 
-// lastMatchHow runs the patterns, last first, against one path and
-// reports the verdict of the last one that matches. decided is false
-// when no pattern matched the path at all.
-func (m *gitignoreMatcher) lastMatchHow(segs []string, isDir bool) (excluded bool, pat *gitignorePattern, decided bool) {
+// lastMatchIdx runs the patterns, last first, against one path and
+// reports the verdict of the last one that matches, along with its
+// index. decided is false when no pattern matched the path at all.
+func (m *gitignoreMatcher) lastMatchIdx(segs []string, isDir bool) (excluded bool, pat *gitignorePattern, idx int, decided bool) {
 	for i := len(m.patterns) - 1; i >= 0; i-- {
 		p := &m.patterns[i]
 		if p.matchesPath(segs, isDir) {
-			return !p.negate, p, true
+			return !p.negate, p, i, true
 		}
 	}
-	return false, nil, false
+	return false, nil, -1, false
 }
 
 // matchesPath applies one pattern to one path: an anchored pattern
 // matches the whole path, an unanchored one matches its last segment
 // (a slash in the middle anchors a pattern, so an unanchored pattern is
 // always a single segment), and a trailing-slash pattern matches
-// directories only.
+// directories only. A "!" re-include matches exactly: git reads a
+// negated pattern as naming the paths it re-includes, not a subtree
+// below a directory it happens to match, so the containment a plain
+// pattern gets ("dist" names everything below it) must not let an
+// anchored re-include swallow a subtree ("!/dist" re-includes dist
+// itself, not dist/a.js).
 func (p *gitignorePattern) matchesPath(segs []string, isDir bool) bool {
 	if p.dirOnly && !isDir {
 		return false
 	}
 	if p.anchored {
+		if p.negate {
+			// A negated anchored pattern matches the path exactly;
+			// everything below a matched directory is re-included
+			// only by git's "last matching line wins" on each
+			// deeper path, not by this pattern reaching down.
+			return matchSegmentsExact(p.segments, segs)
+		}
 		return matchSegments(p.segments, segs)
 	}
 	if len(segs) == 0 {
 		return false
 	}
 	return matchSegments(p.segments, segs[len(segs)-1:])
+}
+
+// matchSegmentsExact is matchSegments without the containment rule:
+// the pattern must consume the whole path, it cannot end early and
+// name everything below what it describes. A "**" segment still spans
+// as many path segments as it needs, because that is the pattern
+// naming those paths, not the containment rule reaching below it.
+func matchSegmentsExact(pat, segs []string) bool {
+	if !containsStarStar(pat) {
+		return len(pat) == len(segs) && matchSegmentsPlain(pat, segs)
+	}
+	memo := make(map[[2]int]bool)
+	return matchSegmentsExactAt(pat, 0, segs, 0, memo)
+}
+
+// matchSegmentsExactAt is matchSegmentsAt with the end condition
+// tightened: the match is only exact when the path is exhausted too.
+func matchSegmentsExactAt(pat []string, pi int, segs []string, si int, memo map[[2]int]bool) bool {
+	key := [2]int{pi, si}
+	if v, ok := memo[key]; ok {
+		return v
+	}
+	res := false
+	defer func() { memo[key] = res }()
+	if pi == len(pat) {
+		// Exact: the pattern consumed the path, and nothing in the
+		// path is left unconsumed.
+		res = si == len(segs)
+		return res
+	}
+	if pat[pi] == "**" {
+		if pi == len(pat)-1 {
+			// A trailing "**" swallows every remaining segment, so
+			// it is exact whenever at least one is left for it, the
+			// same "at least one" rule as the containment walk.
+			res = si < len(segs)
+			return res
+		}
+		if matchSegmentsExactAt(pat, pi+1, segs, si, memo) {
+			res = true
+			return true
+		}
+		for j := si + 1; j <= len(segs); j++ {
+			if matchSegmentsExactAt(pat, pi+1, segs, j, memo) {
+				res = true
+				return true
+			}
+		}
+		return false
+	}
+	if si == len(segs) {
+		return false
+	}
+	if !matchSegment(pat[pi], segs[si]) {
+		return false
+	}
+	res = matchSegmentsExactAt(pat, pi+1, segs, si+1, memo)
+	return res
 }
 
 // matchSegments matches pattern segments against path segments. A
@@ -334,7 +427,9 @@ func matchSegmentHere(pat, str string) bool {
 				return false
 			}
 			negate := false
-			if strings.HasPrefix(body, "!") {
+			// git's fnmatch negates a class with "!" or "^"; a
+			// literal "^" member is written "[]^...]" or escaped.
+			if strings.HasPrefix(body, "!") || strings.HasPrefix(body, "^") {
 				negate = true
 				body = body[1:]
 			}

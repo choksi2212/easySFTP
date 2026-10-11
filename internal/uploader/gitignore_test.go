@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,42 @@ var gitignoreCases = []struct {
 	{[]string{"foo/**"}, "foo/a", false, true},
 	{[]string{"docs/**/notes"}, "docs/a/b/notes", false, true},
 	{[]string{"node_modules/"}, "x/node_modules/keep.js", false, true},
+
+	// An earlier re-include does not beat a later directory exclude:
+	// the directory exclude is the later, more specific line, so the
+	// path is excluded, exactly as git decides it. Found by extending
+	// the differential in review; pinned here so the regression the
+	// review caught (re-include winning by position alone) cannot
+	// return.
+	{[]string{"*.txt", "!important.txt", "secrets/"}, "secrets/important.txt", false, true},
+	{[]string{"*.txt", "!important.txt", "secrets/"}, "secrets/other.txt", false, true},
+	{[]string{"*.txt", "!important.txt", "secrets/"}, "important.txt", false, false},
+	// The allow-list idiom from the issue, followed by a deny line:
+	// the deny line is last, so it wins below the directory too.
+	{[]string{"*", "!*/", "!*.html", "private/"}, "private/a.html", false, true},
+	{[]string{"*", "!*/", "!*.html", "private/"}, "x/private/a.html", false, true},
+	{[]string{"*", "!*/", "!*.html", "private/"}, "a.html", false, false},
+	// The documented divergence still holds when the re-include is
+	// the later line: the leaf re-include wins below the excluded
+	// directory only in that order.
+	{[]string{"secrets/", "!secrets/important.txt"}, "secrets/important.txt", false, false},
+	// An anchored re-include matches exactly: it re-includes the
+	// paths it names, not everything below a directory it names.
+	// git excludes dist/a.js here via "*", and so does the matcher.
+	{[]string{"*", "!/dist"}, "dist", true, false},
+	{[]string{"*", "!/dist"}, "dist/a.js", false, true},
+	// An unanchored negated name matches its basename at any depth,
+	// the way an unanchored plain one does; only the name it spells
+	// is re-included, not a subtree.
+	{[]string{"*", "!dist"}, "dist", true, false},
+	{[]string{"*", "!keep.js"}, "logs/keep.js", false, false},
+	{[]string{"*", "!keep.js"}, "logs/debug.log", false, true},
+	// "[^o]" negates the class the way "[!o]" does; a caret at the
+	// front of a class is not a literal member.
+	{[]string{"[^o]x"}, "ax", false, true},
+	{[]string{"[^o]x"}, "ox", false, false},
+	{[]string{"*.[^o]"}, "a.c", false, true},
+	{[]string{"*.[^o]"}, "a.o", false, false},
 }
 
 func TestGitignoreMatcherFollowsTheRules(t *testing.T) {
@@ -148,7 +185,7 @@ func TestGitignoreDifferentialAgainstGit(t *testing.T) {
 		t.Skip("git not on PATH; the in-memory table covers the rules")
 	}
 	for _, tc := range gitignoreCases {
-		if belowExcludedDir(tc.patterns, tc.path) && hasReinclude(tc.patterns) {
+		if onDivergence(tc.patterns, tc.path, tc.isDir) {
 			continue
 		}
 		dir := t.TempDir()
@@ -207,15 +244,37 @@ func hasReinclude(patterns []string) bool {
 	return false
 }
 
-// belowExcludedDir reports whether the path sits below a directory an
-// earlier trailing-slash pattern excludes, the documented divergence.
-func belowExcludedDir(patterns []string, path string) bool {
-	for _, p := range patterns {
-		if len(p) > 1 && p[len(p)-1] == '/' && p[0] != '!' {
-			dir := p[:len(p)-1]
-			if len(path) > len(dir) && path[:len(dir)] == dir && path[len(dir)] == '/' {
-				return true
-			}
+// onDivergence reports whether a row sits exactly on the documented
+// divergence: the matcher re-includes the path (a later "!" line won),
+// while git can never reach the path at all, because a plain pattern
+// excluded one of its ancestor directories and git prunes there. Only
+// those rows are skipped in the differential; a row below an excluded
+// directory that the matcher still excludes (the re-include came
+// earlier, so the exclude is the later line) agrees with git and must
+// run. The old shape of this check (any dir/ pattern plus any "!" line)
+// skipped far more than the divergence and let the review regression
+// through: the differential never ran the rows that would have caught
+// it.
+func onDivergence(patterns []string, path string, isDir bool) bool {
+	if !hasReinclude(patterns) {
+		return false
+	}
+	m, err := compileGitignore(patterns)
+	if err != nil {
+		// The plain table test reports compile errors; here, failing
+		// open to running the row keeps the differential honest.
+		return false
+	}
+	if got, _ := m.matchesHow(path, isDir); got {
+		// The matcher excludes it; git prunes or matches the same
+		// way, so the row is comparable and must run.
+		return false
+	}
+	segs := strings.Split(path, "/")
+	for k := 1; k < len(segs); k++ {
+		if excluded, pat := m.matchesHow(strings.Join(segs[:k], "/"), true); excluded &&
+			pat != nil && !pat.negate {
+			return true
 		}
 	}
 	return false

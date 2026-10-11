@@ -417,11 +417,18 @@ exclude: |
   re-include may point below an ignored directory; results are identical either
   way, only planning speed differs.
 - One difference from git is deliberate: a `!` re-include below an ignored
-  directory is honored (`dist/` then `!dist/keep.txt` uploads `keep.txt`),
-  where git stops at the excluded directory and never reaches the file. The
-  pruning above is what makes that both possible and exact: with pruning off,
-  every file is walked and the last matching pattern wins, exactly as with
-  pruning on for every path git would reach.
+  directory is honored when it is the later line (`dist/` then
+  `!dist/keep.txt` uploads `keep.txt`), where git stops at the excluded
+  directory and never reaches the file. The pruning above is what makes that
+  both possible and exact: with pruning off, every file is walked and the
+  last matching pattern wins. An earlier re-include does not shield a path
+  from a directory exclude that comes after it (`!important.txt` then
+  `secrets/` still excludes `secrets/important.txt`), the same last-line
+  rule git applies everywhere else.
+- Character classes negate with `!` or `^` (`[!o]`, `[^o]`), as git's
+  fnmatch does. POSIX classes inside brackets (`[[:digit:]]`) are not
+  supported and match literally; that is the one known class difference
+  from git.
 
 ## Outputs
 
