@@ -101,6 +101,14 @@ Notes:
   rewrite, no per-directory round-trips. Exception: with `permissions.directories`
   set, every directory of the plan is still chmod'd, per its documented
   "creates or touches" semantics.
+- Case-insensitive targets (Windows OpenSSH on NTFS, macOS servers on default
+  APFS, many NAS appliances) are safe for case-only renames: a file whose name
+  changed only by case (`Readme.md` to `README.md`, also NFC/NFD differences
+  between macOS and Linux checkouts) has its old spelling removed *before* the
+  new one is uploaded, never after. A delete after the upload would remove the
+  file the run just wrote, because both spellings are one directory entry
+  there; the delete-first order is what lets the new spelling take effect at
+  all.
 
 > **⚠️ The manifest is publicly downloadable in web-root deployments.** The
 > manifest lives *inside* the deploy target, so when that target is a public
@@ -127,10 +135,13 @@ This is the same trade rsync's "quick check" makes.
 **The trade-off, precisely:** a file whose content changed *without* its size
 or modification time changing is invisible to this check and will be missed.
 Modification times are compared at nanosecond resolution, so on common
-filesystems (ext4, APFS, NTFS) that takes two same-size edits with
-bit-identical timestamps; on filesystems with coarse timestamps (FAT stores
-2-second mtimes, and some network filesystems round to seconds), the window
-stays as wide as the filesystem's own clock.
+filesystems (ext4, APFS, NTFS) this requires bit-identical timestamps. Build
+systems can deliberately normalize timestamps, though: in a tree with fixed
+modification times (for example, Nix store output), a same-size content change
+can keep the recorded timestamp on every build and repeatedly reuse a stale
+hash. Leave `sync.fast_path: false` for such trees. On filesystems with coarse
+timestamps (FAT stores 2-second mtimes, and some network filesystems round to
+seconds), the window stays as wide as the filesystem's own clock.
 Without `fast_path`, `sync` never misses a content change, because it
 always compares actual content hashes; this is what you give up in exchange
 for skipping local reads.
