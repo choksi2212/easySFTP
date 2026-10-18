@@ -137,6 +137,20 @@ var gitignoreCases = []struct {
 	{[]string{"[^o]x"}, "ox", false, false},
 	{[]string{"*.[^o]"}, "a.c", false, true},
 	{[]string{"*.[^o]"}, "a.o", false, false},
+
+	// Round 2 of the review: every excluded ancestor takes part in
+	// the ordering, so the re-include has to be later than the
+	// deciding index of all of them, not just the deepest. Both
+	// orderings below answer "ignored" in git check-ignore, and the
+	// deepest-ancestor-only comparison failed open on the first one
+	// by letting the re-include beat a/b/ while never consulting
+	// a/.
+	{[]string{"a/b/", "!a/b/x.txt", "a/"}, "a/b/x.txt", false, true},
+	{[]string{"a/", "!a/b/x.txt", "a/b/"}, "a/b/x.txt", false, true},
+	// The re-include later than every excluded ancestor still
+	// wins: the documented divergence, unchanged by comparing
+	// against all ancestors.
+	{[]string{"a/", "a/b/", "!a/b/x.txt"}, "a/b/x.txt", false, false},
 }
 
 func TestGitignoreMatcherFollowsTheRules(t *testing.T) {
@@ -157,6 +171,7 @@ func TestGitignoreInvalidPatternsFailTheRun(t *testing.T) {
 	for _, bad := range []string{
 		"flags[",        // unterminated class
 		"flags[!",       // negated, still unterminated
+		"[ab]x[y",       // unterminated behind a valid class
 		"trailing" + bs, // lone trailing backslash
 	} {
 		if _, err := compileGitignore([]string{bad}); err == nil {
@@ -166,6 +181,16 @@ func TestGitignoreInvalidPatternsFailTheRun(t *testing.T) {
 	// A name that merely looks like broken regex is not an error.
 	if _, err := compileGitignore([]string{"secret(old"}); err != nil {
 		t.Errorf("secret(old should compile: %v", err)
+	}
+	// An escaped bracket is a literal, not a class, so it compiles
+	// and matches the name that holds the bracket.
+	if _, err := compileGitignore([]string{bs + "["}); err != nil {
+		t.Errorf("escaped \\[ should compile: %v", err)
+	}
+	if m, err := compileGitignore([]string{bs + "["}); err == nil {
+		if got, _ := m.matchesHow("[", false); !got {
+			t.Errorf("pattern \\[: should match a literal [, got excluded=%v", got)
+		}
 	}
 	if _, err := compileGitignore([]string{"a" + bs + "|b"}); err != nil {
 		t.Errorf("escaped pipe should compile: %v", err)

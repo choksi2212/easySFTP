@@ -146,11 +146,11 @@ func trimRightUnescapedSpace(line string) string {
 // directory, so a "!" line can re-include a file git would never
 // reach, because the planner disables pruning whenever a "!" line is
 // present and walks the whole tree. But that re-include only wins
-// when it is the later line: an earlier "!" re-include does not
-// shield the path from a directory exclude that comes after it, the
-// same way the last matching line decides every ordinary path. Both
-// verdicts carry their pattern index so the rule is a comparison, not
-// a guess.
+// when it is later than every excluded ancestor: an earlier "!"
+// re-include does not shield the path from a directory exclude that
+// comes after it, the same way the last matching line decides every
+// ordinary path. Both verdicts carry their pattern index so the rule
+// is a comparison, not a guess.
 func (m *gitignoreMatcher) matchesHow(path string, isDir bool) (bool, *gitignorePattern) {
 	if path == "." {
 		return false, nil
@@ -163,22 +163,34 @@ func (m *gitignoreMatcher) matchesHow(path string, isDir bool) (bool, *gitignore
 		// that.
 		return true, leafPat
 	}
+	// The ancestors of a path are directories by definition. Every
+	// excluded ancestor takes part in the decision, and the last
+	// line written wins, so the deciding index is the largest
+	// index among them. Stopping at the deepest one, as an
+	// earlier round did, let a re-include written before a later,
+	// shallower directory exclude fail the run open ("a/b/",
+	// "!a/b/x.txt", "a/" uploaded a/b/x.txt where git ignores
+	// it), which is the direction issue #314 is about.
+	decidingIdx := -1
+	var deciding *gitignorePattern
 	for k := len(segs) - 1; k >= 1; k-- {
-		// The ancestors of a path are directories by definition.
-		if excluded, pat, idx, decided := m.lastMatchIdx(segs[:k], true); decided && excluded {
-			// A leaf re-include beats the excluded ancestor only
-			// when it is the later line. A re-include written
-			// before the directory exclude leaves the ancestor's
-			// verdict standing, the same way the last matching
-			// line decides every ordinary path: the directory
-			// exclude is the more specific, later line. The leaf
-			// re-include winning below an excluded directory when
-			// it is the later line is the documented divergence.
-			if leafDecided && leafIdx > idx {
-				return false, leafPat
-			}
-			return true, pat
+		if excluded, pat, idx, decided := m.lastMatchIdx(segs[:k], true); decided && excluded && idx > decidingIdx {
+			decidingIdx, deciding = idx, pat
 		}
+	}
+	if deciding != nil {
+		// A leaf re-include beats the excluded ancestors only
+		// when it is later than every one of them. A re-include
+		// written before any directory exclude leaves that
+		// exclude standing, the same way the last matching line
+		// decides every ordinary path. The leaf re-include
+		// winning below an excluded directory when it is later
+		// than every excluded ancestor is the documented
+		// divergence.
+		if leafDecided && leafIdx > decidingIdx {
+			return false, leafPat
+		}
+		return true, deciding
 	}
 	if leafDecided {
 		return false, leafPat
@@ -509,9 +521,16 @@ const BS = 92
 // segments and rejects the syntax that would otherwise silently mean
 // something else. A character class that never closes is the case worth
 // failing on: the pattern would match nothing and the user would not
-// learn why.
+// learn why. Every unescaped "[" is checked, so the promise holds for
+// a class left open behind a valid one ("[ab]x[y") and not just the
+// first bracket of the line.
 func parseGitignoreSegments(body string, lineNo int, raw string) ([]string, error) {
-	if i := strings.IndexByte(body, '['); i >= 0 {
+	for i := 0; i < len(body); i++ {
+		if body[i] != '[' || (i > 0 && body[i-1] == BS) {
+			// An escaped "\[" names a literal bracket, not a
+			// class, so only an unescaped "[" opens one.
+			continue
+		}
 		if !classClosed(body[i:]) {
 			return nil, fmt.Errorf("exclude pattern %d: %q has an unterminated character class", lineNo, raw)
 		}
