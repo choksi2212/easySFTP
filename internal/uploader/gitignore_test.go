@@ -151,6 +151,23 @@ var gitignoreCases = []struct {
 	// wins: the documented divergence, unchanged by comparing
 	// against all ancestors.
 	{[]string{"a/", "a/b/", "!a/b/x.txt"}, "a/b/x.txt", false, false},
+
+	// Round 3 of the review: the canonical example from git's own
+	// gitignore documentation ("exclude everything except directory
+	// foo/bar"). The leaf containment returned the "/foo/*" match on
+	// foo/bar/x.txt as a final exclude, so the "!/foo/bar" line that
+	// re-includes the directory never got ordered against it; anchored
+	// patterns now match the path exactly and the ancestor walk owns
+	// all the containment.
+	{[]string{"/*", "!/foo", "/foo/*", "!/foo/bar"}, "foo/bar/x.txt", false, false},
+	{[]string{"/*", "!/foo", "/foo/*", "!/foo/bar"}, "foo/baz/x.txt", false, true},
+	{[]string{"/*", "!/foo", "/foo/*", "!/foo/bar"}, "foo/bar", true, false},
+	{[]string{"/a/*", "!/a/b/"}, "a/b/x.txt", false, false},
+	// A "[" inside a closed class is a member, not a new opener: git
+	// reads "[[]" as a class matching a literal bracket, so the parser
+	// must skip past a closed class instead of re-scanning its members.
+	{[]string{"[[]"}, "[", false, true},
+	{[]string{"[[]"}, "x", false, false},
 }
 
 func TestGitignoreMatcherFollowsTheRules(t *testing.T) {

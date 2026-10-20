@@ -215,37 +215,41 @@ func (m *gitignoreMatcher) lastMatchIdx(segs []string, isDir bool) (excluded boo
 // matches the whole path, an unanchored one matches its last segment
 // (a slash in the middle anchors a pattern, so an unanchored pattern is
 // always a single segment), and a trailing-slash pattern matches
-// directories only. A "!" re-include matches exactly: git reads a
-// negated pattern as naming the paths it re-includes, not a subtree
-// below a directory it happens to match, so the containment a plain
-// pattern gets ("dist" names everything below it) must not let an
-// anchored re-include swallow a subtree ("!/dist" re-includes dist
-// itself, not dist/a.js).
+// directories only. Both anchored forms, plain and negated, match the
+// path exactly. Containment -- "dist" names everything below it -- is
+// the ancestor walk's job in matchesHow, never the leaf's: deciding it
+// here returned a leaf exclude as final and skipped the ordering a
+// later re-include needs, so "/foo/*" + "!/foo/bar" excluded
+// foo/bar/x.txt outright (the "exclude everything except directory
+// foo/bar" example from git's own gitignore documentation) because
+// "/foo/*" contains the leaf through the ancestor foo/bar while the
+// "!/foo/bar" that re-includes that directory never got a say. A "!"
+// re-include also still means what it always meant: it names the paths
+// it re-includes, not a subtree below a directory it happens to match
+// ("!/dist" re-includes dist itself, not dist/a.js).
 func (p *gitignorePattern) matchesPath(segs []string, isDir bool) bool {
 	if p.dirOnly && !isDir {
 		return false
 	}
 	if p.anchored {
-		if p.negate {
-			// A negated anchored pattern matches the path exactly;
-			// everything below a matched directory is re-included
-			// only by git's "last matching line wins" on each
-			// deeper path, not by this pattern reaching down.
-			return matchSegmentsExact(p.segments, segs)
-		}
-		return matchSegments(p.segments, segs)
+		// Exact for the negated form (it re-includes the paths it
+		// names) and for the plain one alike: the subtree a plain
+		// pattern covers is reached through the ancestor walk, one
+		// directory at a time, in matchesHow.
+		return matchSegmentsExact(p.segments, segs)
 	}
 	if len(segs) == 0 {
 		return false
 	}
-	return matchSegments(p.segments, segs[len(segs)-1:])
+	return matchSegmentsExact(p.segments, segs[len(segs)-1:])
 }
 
-// matchSegmentsExact is matchSegments without the containment rule:
-// the pattern must consume the whole path, it cannot end early and
-// name everything below what it describes. A "**" segment still spans
-// as many path segments as it needs, because that is the pattern
-// naming those paths, not the containment rule reaching below it.
+// matchSegmentsExact matches pattern segments against path segments
+// with the pattern consuming the whole path: it cannot end early and
+// name everything below what it describes, which is the ancestor
+// walk's job in matchesHow. A "**" segment still spans as many path
+// segments as it needs, because that is the pattern naming those
+// paths, not a containment rule reaching below it.
 func matchSegmentsExact(pat, segs []string) bool {
 	if !containsStarStar(pat) {
 		return len(pat) == len(segs) && matchSegmentsPlain(pat, segs)
@@ -254,8 +258,9 @@ func matchSegmentsExact(pat, segs []string) bool {
 	return matchSegmentsExactAt(pat, 0, segs, 0, memo)
 }
 
-// matchSegmentsExactAt is matchSegmentsAt with the end condition
-// tightened: the match is only exact when the path is exhausted too.
+// matchSegmentsExactAt is the memoized recursion behind
+// matchSegmentsExact: "**" spans zero or more segments, and the match
+// is only exact when the path is exhausted too.
 func matchSegmentsExactAt(pat []string, pi int, segs []string, si int, memo map[[2]int]bool) bool {
 	key := [2]int{pi, si}
 	if v, ok := memo[key]; ok {
@@ -299,28 +304,8 @@ func matchSegmentsExactAt(pat []string, pi int, segs []string, si int, memo map[
 	return res
 }
 
-// matchSegments matches pattern segments against path segments. A
-// pattern that ends before the path does names everything below it
-// ("dist" excludes "dist/a.js", "docs/**/notes" excludes everything
-// below a directory it matches), which is how gitignore containment
-// works: a pattern that matches a directory matches the whole subtree.
-func matchSegments(pat, segs []string) bool {
-	if len(pat) == 0 {
-		return true
-	}
-	if !containsStarStar(pat) {
-		return matchSegmentsPlain(pat, segs)
-	}
-	// A pattern with "**" segments is matched through a memo table keyed
-	// by (pattern index, path index), so a hostile pattern with many
-	// separated "**" segments cannot walk an exponential number of
-	// states (the lesson of the shared-anchor walk in issue #290).
-	memo := make(map[[2]int]bool)
-	return matchSegmentsAt(pat, 0, segs, 0, memo)
-}
-
-// matchSegmentsPlain is matchSegments for patterns without "**": a
-// plain recursion, one step per segment, no allocation.
+// matchSegmentsPlain is matchSegmentsExact for patterns without
+// "**": a plain recursion, one step per segment, no allocation.
 func matchSegmentsPlain(pat, segs []string) bool {
 	if len(pat) == 0 {
 		return true
@@ -342,50 +327,6 @@ func containsStarStar(pat []string) bool {
 		}
 	}
 	return false
-}
-
-// matchSegmentsAt is the memoized form of the "**" recursion. A
-// non-trailing "**" swallows zero or more path segments; a trailing
-// one must swallow at least one, so "foo/**" names everything below
-// foo but not foo itself, the way git reads it.
-func matchSegmentsAt(pat []string, pi int, segs []string, si int, memo map[[2]int]bool) bool {
-	key := [2]int{pi, si}
-	if v, ok := memo[key]; ok {
-		return v
-	}
-	res := false
-	defer func() { memo[key] = res }()
-	if pi == len(pat) {
-		// The pattern named every segment it could: this path is below
-		// what it describes.
-		res = true
-		return true
-	}
-	if pat[pi] == "**" {
-		if pi == len(pat)-1 {
-			res = si < len(segs)
-			return res
-		}
-		if matchSegmentsAt(pat, pi+1, segs, si, memo) {
-			res = true
-			return true
-		}
-		for j := si + 1; j <= len(segs); j++ {
-			if matchSegmentsAt(pat, pi+1, segs, j, memo) {
-				res = true
-				return true
-			}
-		}
-		return false
-	}
-	if si == len(segs) {
-		return false
-	}
-	if !matchSegment(pat[pi], segs[si]) {
-		return false
-	}
-	res = matchSegmentsAt(pat, pi+1, segs, si+1, memo)
-	return res
 }
 
 // matchSegment matches one pattern segment against one path segment,
@@ -521,18 +462,27 @@ const BS = 92
 // segments and rejects the syntax that would otherwise silently mean
 // something else. A character class that never closes is the case worth
 // failing on: the pattern would match nothing and the user would not
-// learn why. Every unescaped "[" is checked, so the promise holds for
-// a class left open behind a valid one ("[ab]x[y") and not just the
-// first bracket of the line.
+// learn why. Every unescaped "[" that opens a class is checked, so
+// the promise holds for a class left open behind a valid one
+// ("[ab]x[y") and not just the first bracket of the line; a bracket
+// inside a class that closes is a member and is never re-checked.
 func parseGitignoreSegments(body string, lineNo int, raw string) ([]string, error) {
-	for i := 0; i < len(body); i++ {
+	for i := 0; i < len(body); {
 		if body[i] != '[' || (i > 0 && body[i-1] == BS) {
 			// An escaped "\[" names a literal bracket, not a
 			// class, so only an unescaped "[" opens one.
+			i++
 			continue
 		}
-		if !classClosed(body[i:]) {
+		// A class that closes ends at its "]": skip past it, the
+		// way the matcher consumes it, instead of re-scanning its
+		// members. A "[" inside a closed class is a member naming
+		// a literal bracket, the way git's fnmatch reads "[[]",
+		// not the start of another class.
+		if _, rest, ok := splitClass(body[i:]); !ok {
 			return nil, fmt.Errorf("exclude pattern %d: %q has an unterminated character class", lineNo, raw)
+		} else {
+			i = len(body) - len(rest)
 		}
 	}
 	if len(body) > 0 && body[len(body)-1] == BS {
@@ -556,24 +506,4 @@ func parseGitignoreSegments(body string, lineNo int, raw string) ([]string, erro
 		out = append(out, seg)
 	}
 	return out, nil
-}
-
-// classClosed reports whether the class starting at rest[0] closes.
-// Escapes are honored: an escaped "]" does not close the class.
-func classClosed(rest string) bool {
-	i := 1
-	if i < len(rest) && rest[i] == ']' {
-		i++
-	}
-	for i < len(rest) {
-		switch rest[i] {
-		case BS:
-			i += 2
-			continue
-		case ']':
-			return true
-		}
-		i++
-	}
-	return false
 }
